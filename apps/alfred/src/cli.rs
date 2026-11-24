@@ -113,7 +113,7 @@ fn chrome_lets_alfred_in() -> bool {
 fn agent_label(cfg: &Config) -> String {
     let server = if cfg.llm.provider == Provider::Ollama { "Ollama" } else { "OpenAI-compatible" };
     match cfg.llm.think_model.as_deref().filter(|m| !m.trim().is_empty() && *m != cfg.llm.model) {
-        Some(thinker) => format!("{} ({server}), thinking with {thinker}", cfg.llm.model),
+        Some(thinker) => format!("{} ({server}; hard questions: {thinker})", cfg.llm.model),
         None => format!("{} ({server})", cfg.llm.model),
     }
 }

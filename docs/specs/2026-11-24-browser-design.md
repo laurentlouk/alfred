@@ -55,6 +55,11 @@ slow and shallow, and they never type with real keystrokes.
    navigated or clicked, and a confirmed click happens in that tab or not at all. The guards hold as they
    are, plus what speaks for the user once signed in (reply, comment, share, invite, authorize, allow,
    upload, save changes, follow). When Chrome can't be reached, Alfred says how to allow it.
+   Tested live (Chrome 158, the owner's signed-in profile): the first connection waited for the owner's
+   Allow, then "what's the weather in Paris" was answered from accuweather.com in 17.7 s, the Allow
+   included; the next question reused the same tab and was answered from Google's results in 12.1 s, with
+   no robot check (Alfred's fresh profile met one on most searches). The owner's 14 other tabs were left
+   as they were.
    *Rejected:* `--profile Default`, which copies the profile into a separate Chrome: tested live, the copy
    opened signed out of Google and GitHub although the cookie store was copied whole, and the owner wants
    their own browser, not a second one.
