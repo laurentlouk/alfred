@@ -39,7 +39,8 @@ fn compose(body: &str) -> Value {
         "snapshot_id": "s2", "window": {"title": "Re: Dinner on Friday?"},
         "tree": {"role": "window", "children": [
             {"ref_id": "@s2:e1", "role": "textarea", "name": "Message body", "value": body},
-            {"ref_id": "@s2:e2", "role": "button", "name": "Send"}
+            {"ref_id": "@s2:e2", "role": "button", "name": "Send"},
+            {"ref_id": "@s2:e3", "role": "button"}
         ]}
     })
 }
@@ -226,4 +227,49 @@ fn a_confirmed_press_finds_the_button_again_and_clicks_it() {
     let log = mail.log();
     assert!(log.iter().any(|c| c[0] == "find" && c.contains(&"--exact".to_string()) && c.contains(&"Send".to_string())));
     assert!(mail.clicked("@s3:e2"));
+}
+
+#[test]
+fn typed_text_never_carries_an_enter_key() {
+    let mail = Shared::default();
+    mail.0.state.lock().unwrap().set_value_unsupported = true;
+    let (h, _) = hands(
+        &mail,
+        vec![
+            step("click", json!({"ref": "e1"})),
+            step("type", json!({"ref": "e1", "text": "On my way.\nSee you soon\r\n"})),
+            step("done", json!({})),
+        ],
+        8,
+    );
+    h.use_app("Mail", "x").unwrap();
+    let typed = mail.log().into_iter().find(|c| c[0] == "type").unwrap();
+    assert_eq!(typed.last().unwrap(), "<stdin:On my way. See you soon>");
+}
+
+#[test]
+fn set_value_keeps_line_breaks_because_it_sends_no_keys() {
+    let mail = Shared::default();
+    let (h, _) = hands(
+        &mail,
+        vec![
+            step("click", json!({"ref": "e1"})),
+            step("type", json!({"ref": "e1", "text": "Line one\nLine two"})),
+            step("done", json!({})),
+        ],
+        8,
+    );
+    h.use_app("Mail", "x").unwrap();
+    assert_eq!(mail.0.state.lock().unwrap().body, "Line one\nLine two");
+}
+
+#[test]
+fn an_unnamed_button_is_never_clicked() {
+    let mail = Shared::default();
+    let (h, model) =
+        hands(&mail, vec![step("click", json!({"ref": "e1"})), step("click", json!({"ref": "e3"})), step("done", json!({}))], 8);
+    h.use_app("Mail", "reply and send").unwrap();
+    assert!(!mail.clicked("@s2:e3"));
+    let third = &model.seen.lock().unwrap()[2];
+    assert!(third[1].content.contains("did not click e3 because it has no name"));
 }

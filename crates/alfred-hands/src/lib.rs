@@ -117,11 +117,13 @@ impl DesktopHands {
         Ok(Step { action: field("action"), reference: short_ref(&field("ref")), text: field("text"), note: field("note") })
     }
 
-    /// Put `text` into a field: set its value (no keystrokes, so no Enter that could send), else type it.
+    /// Put `text` into a field: set its value (no keystrokes, so no Enter that could send), else type it
+    /// with every line break turned into a space. A typed line break is an Enter key, and in a chat app Enter
+    /// sends the message, past the guard.
     fn fill(&self, full_ref: &str, text: &str) -> Result<(), DesktopError> {
         match self.call(args(["set-value", full_ref, "--stdin"]), Some(text)) {
             Ok(_) => Ok(()),
-            Err(e) if e.retry_safe => self.call(args(["type", full_ref, "--stdin"]), Some(text)).map(|_| ()),
+            Err(e) if e.retry_safe => self.call(args(["type", full_ref, "--stdin"]), Some(&without_line_breaks(text))).map(|_| ()),
             Err(e) => Err(e),
         }
     }
@@ -159,6 +161,15 @@ impl Hands for DesktopHands {
                     };
                     let label = if el.name.is_empty() { el.role.clone() } else { format!("{} \"{}\"", el.role, el.name) };
                     let result = match step.action.as_str() {
+                        // An icon-only button (a paper plane that sends) has no name for the guard to read:
+                        // such controls are never clicked.
+                        "click" if el.name.trim().is_empty() && UNNAMED_REFUSED.contains(&el.role.to_lowercase().as_str()) => {
+                            history.push(format!(
+                                "did not click {} because it has no name and could be a send or delete control; choose a named control",
+                                step.reference
+                            ));
+                            continue;
+                        }
                         "click" if guard::is_risky(&el.name) => {
                             let done = summary(app, &history, "");
                             let what = if done.is_empty() { format!("I've got it ready in {app}.") } else { done };
@@ -193,6 +204,14 @@ impl Hands for DesktopHands {
         self.call(args(["click", &full_ref]), None).map_err(|e| format!("Clicking “{name}” in {app} failed: {}", e.message))?;
         Ok(Outcome::new(format!("I've clicked “{name}” in {app}.")))
     }
+}
+
+/// Roles whose unnamed elements are never clicked: they act, and without a name the guard can't tell how.
+const UNNAMED_REFUSED: &[&str] = &["button", "link", "menuitem", "menubutton", "image", "cell", "element"];
+
+/// Keystroke-safe text: line breaks become spaces, runs of spaces collapse.
+fn without_line_breaks(text: &str) -> String {
+    text.split(['\n', '\r']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// What the run did, for the user: "In Mail I clicked button "Reply", then filled … ".

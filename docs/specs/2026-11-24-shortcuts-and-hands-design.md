@@ -53,6 +53,12 @@ home devices, Slack. Two complementary bridges do that:
    (send, delete, remove, pay, buy, submit, post, publish, transfer, erase, unsubscribe, quit, and their
    French forms) is not performed; the loop ends with that click as a pending action, and Alfred asks
    ("Shall I click “Send” in Mail?"). On yes, the element is found again by role and name and clicked.
+   *Hardened after a security review:* text typed as keystrokes (when a field can't take a value) has its
+   line breaks turned into spaces, because a typed Enter sends in chat apps; setting a value sends no keys
+   and keeps them. Unnamed buttons, links and menu items are never clicked, because an icon-only Send has
+   no name for the guard to read. *Not adopted:* an allowlist where every other click asks first, which
+   would stop each step of a task (Reply, a message row). *Residual risk:* a control labelled in another
+   language, or misleadingly, gets past the word list; the one-app scope and the step cap still hold.
 8. **Snapshots are compacted for the model:** one line per element, `e12 button "Reply"`, static text kept
    (that is where an email's content is), values clipped to 120 characters, the whole view capped at 9,000
    characters. Refs are shown without their snapshot prefix and mapped back.
