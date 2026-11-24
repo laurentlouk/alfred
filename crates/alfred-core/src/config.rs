@@ -37,7 +37,8 @@ impl Default for ShortcutsConfig {
 pub struct DesktopConfig {
     /// Operate apps on screen through `agent-desktop` when it is installed.
     pub enabled: bool,
-    /// The model that drives on-screen steps. Reading an app's interface needs more than a 0.6B model.
+    /// The model that drives on-screen steps. Measured in live Mail runs: qwen3:4b reads an app but loses
+    /// its place in multi-step tasks; qwen3:8b plans and follows menu commands.
     pub model: String,
     /// The most steps one request may take.
     pub max_steps: u32,
@@ -47,7 +48,7 @@ pub struct DesktopConfig {
 
 impl Default for DesktopConfig {
     fn default() -> Self {
-        Self { enabled: true, model: "qwen3:4b".into(), max_steps: 8, command: "agent-desktop".into() }
+        Self { enabled: true, model: "qwen3:8b".into(), max_steps: 8, command: "agent-desktop".into() }
     }
 }
 
@@ -85,6 +86,10 @@ pub struct LlmConfig {
     /// Read from the environment variable named here, never stored in the file.
     pub api_key_env: String,
     pub timeout_secs: u64,
+    /// The context window asked of the model, in tokens.
+    pub context_tokens: u32,
+    /// The most tokens one model reply may use: enough for a decision, never a runaway.
+    pub max_reply_tokens: u32,
     /// Earlier turns sent back to the model for context.
     pub history_turns: usize,
 }
@@ -98,6 +103,8 @@ impl Default for LlmConfig {
             model: "qwen3:0.6b".into(),
             api_key_env: "ALFRED_API_KEY".into(),
             timeout_secs: 60,
+            context_tokens: 8192,
+            max_reply_tokens: 256,
             history_turns: 3,
         }
     }
@@ -225,7 +232,7 @@ mod tests {
         assert_eq!(c.voice.voice, "bm_george");
         assert_eq!(c.ui.shortcut, "ctrl+alt+space");
         assert!(c.shortcuts.enabled && c.shortcuts.trusted.is_empty());
-        assert_eq!(c.desktop.model, "qwen3:4b");
+        assert_eq!(c.desktop.model, "qwen3:8b");
         assert_eq!(c.llm.with_model("qwen3:4b").base_url, c.llm.base_url);
     }
 

@@ -18,7 +18,11 @@ pub fn build(cfg: &Config) -> (Agent, MacExecutor) {
     if cfg.desktop.enabled
         && let Some(program) = find_program(&cfg.desktop.command)
     {
-        let model = llm::from_config(&cfg.llm.with_model(&cfg.desktop.model));
+        // An app's window and menus fill a few thousand tokens: give the on-screen model room for them.
+        let mut hands_llm = cfg.llm.with_model(&cfg.desktop.model);
+        hands_llm.context_tokens = hands_llm.context_tokens.max(16_384);
+        hands_llm.max_reply_tokens = hands_llm.max_reply_tokens.max(512);
+        let model = llm::from_config(&hands_llm);
         let hands = DesktopHands::new(Box::new(AgentDesktop::new(program)), model, cfg.desktop.max_steps as usize);
         exec = exec.with_hands(Arc::new(hands));
         catalog.hands = true;

@@ -8,7 +8,12 @@
 //! ```
 //!
 //! Lines with a ref (`e1`) can be acted on; `text` lines are content to read. Refs are shown without their
-//! snapshot prefix and mapped back when the model picks one.
+//! snapshot prefix and mapped back when the model picks one; menu-bar refs start with `m` so they never
+//! collide with the window's.
+//!
+//! Real apps are big (Mail's window holds hundreds of elements), so the character budget is shared
+//! fairly: at every level each branch gets an equal part of what is left, and a small branch gives what it
+//! doesn't use to the others. A long sidebar can't crowd out the message list beside it.
 
 use std::collections::HashMap;
 
@@ -21,12 +26,14 @@ pub struct Element {
     pub full_ref: String,
     pub role: String,
     pub name: String,
+    /// The element is already selected (a list row, a mailbox).
+    pub selected: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct View {
     pub text: String,
-    /// Short ref (`e12`) → element.
+    /// Short ref (`e12`, `m330`) → element.
     pub refs: HashMap<String, Element>,
     /// Some lines didn't fit and were left out.
     pub truncated: bool,
@@ -34,133 +41,244 @@ pub struct View {
 
 const MAX_VALUE: usize = 120;
 const MAX_DEPTH_INDENT: usize = 6;
+/// States worth a model's attention. "focused" is left out: Mail marks every row of a list focused.
+const STATES_SHOWN: &[&str] = &["selected", "checked", "disabled", "expanded", "offscreen"];
 
-/// Compact a `snapshot` result (its `data`) into at most `limit` characters.
+/// A node already turned into its line, with the size of everything below it.
+struct Rendered {
+    line: Option<String>,
+    entry: Option<(String, Element)>,
+    children: Vec<Rendered>,
+    size: usize,
+}
+
+/// Compact a window `snapshot` result (its `data`) into at most `limit` characters.
 pub fn compact(data: &Value, limit: usize) -> View {
     let mut view = View::default();
     let mut lines = Vec::new();
+    let mut budget = limit;
     if let Some(title) = data["window"]["title"].as_str().filter(|t| !t.is_empty()) {
-        lines.push(format!("window \"{}\"", clip(title)));
+        let line = format!("window \"{}\"", clip(title));
+        budget = budget.saturating_sub(line.len() + 1);
+        lines.push(line);
     }
-    walk(&data["tree"], 0, &mut lines, &mut view.refs);
-    let mut used = 0;
-    let mut kept = Vec::new();
-    for line in lines {
-        if used + line.len() + 1 > limit {
-            view.truncated = true;
-            break;
-        }
-        used += line.len() + 1;
-        kept.push(line);
-    }
+    let tree = build(&data["tree"], 0, &[], "e");
+    let used = emit(&tree, budget, &mut lines, &mut view.refs);
+    view.truncated = used < tree.size;
     if view.truncated {
-        kept.push("… (more elements not shown)".into());
+        lines.push("… (more elements not shown)".into());
     }
-    view.text = kept.join("\n");
+    view.text = lines.join("\n");
     view
 }
 
-fn walk(node: &Value, depth: usize, lines: &mut Vec<String>, refs: &mut HashMap<String, Element>) {
-    if !node.is_object() {
-        return;
-    }
+fn build(node: &Value, depth: usize, ancestors: &[String], prefix: &str) -> Rendered {
     let role = node["role"].as_str().unwrap_or("element");
-    let name = node["name"].as_str().unwrap_or("").trim();
+    // An unnamed row borrows the name of its first named actionable child (a message row, its sender's
+    // cell), so the row's line says what it is and carries its [selected] state where the model looks.
+    let name = match node["name"].as_str().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => n,
+        None if node["ref_id"].is_string() => borrowed_name(node),
+        None => "",
+    };
     let value = node["value"].as_str().map(str::trim).unwrap_or("");
     let indent = " ".repeat(depth.min(MAX_DEPTH_INDENT));
+    let parent = ancestors.last().map(|a| bare(a)).unwrap_or("");
+    let mut line = None;
+    let mut entry = None;
     if let Some(full) = node["ref_id"].as_str() {
-        let short = full.rsplit(':').next().unwrap_or(full).to_string();
-        let mut line = format!("{indent}{short} {role}");
-        if !name.is_empty() {
-            line.push_str(&format!(" \"{}\"", clip(name)));
+        let short = format!("{prefix}{}", full.rsplit(':').next().unwrap_or(full).trim_start_matches('e'));
+        // A cell repeating its row's or item's name adds nothing: its parent is the one to act on.
+        let duplicate = !name.is_empty() && name == parent && node_has_ref_parent(ancestors);
+        if !duplicate {
+            let mut l = format!("{indent}{short} {role}");
+            if !name.is_empty() {
+                l.push_str(&format!(" \"{}\"", clip(name)));
+            }
+            if !value.is_empty() && value != name {
+                l.push_str(&format!(" = \"{}\"", clip(value)));
+            }
+            let states: Vec<&str> = node["states"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).filter(|s| STATES_SHOWN.contains(s)).collect())
+                .unwrap_or_default();
+            if !states.is_empty() {
+                l.push_str(&format!(" [{}]", states.join(", ")));
+            }
+            line = Some(l);
         }
-        if !value.is_empty() && value != name {
-            line.push_str(&format!(" = \"{}\"", clip(value)));
-        }
-        let states: Vec<&str> = node["states"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .filter(|s| ["selected", "focused", "checked", "disabled", "expanded"].contains(s))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !states.is_empty() {
-            line.push_str(&format!(" [{}]", states.join(", ")));
-        }
-        lines.push(line);
-        refs.insert(short, Element { full_ref: full.to_string(), role: role.to_string(), name: name.to_string() });
+        let selected = node["states"].as_array().is_some_and(|a| a.iter().any(|v| v == "selected"));
+        entry = Some((short, Element { full_ref: full.to_string(), role: role.to_string(), name: name.to_string(), selected }));
     } else {
-        // No ref: only content worth reading gets a line; structure is just walked through.
+        // No ref: only content worth reading gets a line, and not when it repeats a label just above.
         let content = if !value.is_empty() { value } else { name };
-        if !content.is_empty() && depth > 0 {
-            lines.push(format!("{indent}text \"{}\"", clip(content)));
+        if !content.is_empty() && depth > 0 && !ancestors.iter().rev().take(2).any(|a| bare(a) == content) {
+            line = Some(format!("{indent}text \"{}\"", clip(content)));
         }
     }
-    if let Some(children) = node["children"].as_array() {
-        for c in children {
-            walk(c, depth + 1, lines, refs);
+    let mut next: Vec<String> = ancestors.to_vec();
+    next.push(if node["ref_id"].is_string() { format!("\u{1}{name}") } else { name.to_string() });
+    let children: Vec<Rendered> = node["children"]
+        .as_array()
+        .map(|cs| cs.iter().filter(|c| c.is_object()).map(|c| build(c, depth + 1, &next, prefix)).collect())
+        .unwrap_or_default();
+    let size = line.as_ref().map_or(0, |l| l.len() + 1) + children.iter().map(|c| c.size).sum::<usize>();
+    Rendered { line, entry, children, size }
+}
+
+fn borrowed_name(node: &Value) -> &str {
+    node["children"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["ref_id"].is_string())
+        .find_map(|c| c["name"].as_str().map(str::trim).filter(|n| !n.is_empty()))
+        .unwrap_or("")
+}
+
+/// Ancestors are kept as names; one with a ref is marked with a leading \u{1} so the duplicate check can tell.
+fn bare(a: &str) -> &str {
+    a.trim_start_matches('\u{1}')
+}
+
+fn node_has_ref_parent(ancestors: &[String]) -> bool {
+    ancestors.last().is_some_and(|a| a.starts_with('\u{1}'))
+}
+
+/// Write `r` into `lines` within `budget` characters; returns the characters used.
+fn emit(r: &Rendered, budget: usize, lines: &mut Vec<String>, refs: &mut HashMap<String, Element>) -> usize {
+    let mut used = 0;
+    if let Some(l) = &r.line {
+        if l.len() + 1 > budget {
+            return 0;
         }
+        lines.push(l.clone());
+        used += l.len() + 1;
+    }
+    if let (Some((short, el)), Some(_)) = (&r.entry, &r.line) {
+        refs.insert(short.clone(), el.clone());
+    }
+    let sizes: Vec<usize> = r.children.iter().map(|c| c.size).collect();
+    // Where a big region sits beside others (a sidebar next to a message list), the budget is shared
+    // fairly, small branches first. Where every branch is small (the rows of a list, the labels of a row),
+    // they are kept whole and in order: the first rows complete, the rest cut.
+    let regions = sizes.len() >= 2 && sizes.iter().any(|&s| s >= REGION);
+    let allocations = if regions { share(&sizes, budget - used) } else { in_order(&sizes, budget - used) };
+    for (child, alloc) in r.children.iter().zip(allocations) {
+        used += emit(child, alloc, lines, refs);
+    }
+    used
+}
+
+/// A branch at least this big (in characters) is a region of the window.
+const REGION: usize = 1200;
+
+/// Each branch in turn gets what it needs while the budget lasts.
+fn in_order(sizes: &[usize], budget: usize) -> Vec<usize> {
+    let mut left = budget;
+    sizes
+        .iter()
+        .map(|&s| {
+            let a = s.min(left);
+            left -= a;
+            a
+        })
+        .collect()
+}
+
+/// Water-filling: each branch gets an equal part of what's left, and small branches pass on what they
+/// don't need.
+fn share(sizes: &[usize], budget: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&i| sizes[i]);
+    let mut out = vec![0; sizes.len()];
+    let mut left = budget;
+    for (k, &i) in order.iter().enumerate() {
+        let fair = left / (sizes.len() - k);
+        out[i] = sizes[i].min(fair);
+        left -= out[i];
+    }
+    out
+}
+
+/// The app's menus as lines (`m330 "Répondre"` under `m327 menu "Message"`): top-level menus and the
+/// commands directly inside them. The Apple menu (shut down, restart, log out) and the Services submenu are
+/// left out: no app task needs them. Disabled items and separators are dropped.
+pub fn compact_menubar(data: &Value, limit: usize) -> View {
+    let mut view = View::default();
+    let mut lines = Vec::new();
+    let mut used = 0;
+    let tops = data["tree"]["children"].as_array().cloned().unwrap_or_default();
+    'menus: for top in tops.iter().skip_while(|t| t["name"].as_str() == Some("Apple")) {
+        let Some((short, el)) = menu_entry(top) else { continue };
+        let head = format!("{short} menu \"{}\"", clip(&el.name));
+        let items: Vec<(String, Element)> = top["children"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|menu| menu["children"].as_array().cloned().unwrap_or_default())
+            .filter_map(|item| menu_entry(&item))
+            .filter(|(_, e)| e.name != "Services")
+            .collect();
+        if used + head.len() + 1 > limit {
+            view.truncated = true;
+            break;
+        }
+        used += head.len() + 1;
+        lines.push(head);
+        view.refs.insert(short, el);
+        for (s, e) in items {
+            let line = format!(" {s} \"{}\"", clip(&e.name));
+            if used + line.len() + 1 > limit {
+                view.truncated = true;
+                break 'menus;
+            }
+            used += line.len() + 1;
+            lines.push(line);
+            view.refs.insert(s, e);
+        }
+    }
+    view.text = lines.join("\n");
+    view
+}
+
+fn menu_entry(item: &Value) -> Option<(String, Element)> {
+    let full = item["ref_id"].as_str()?;
+    let name = item["name"].as_str().unwrap_or("").trim();
+    let disabled = item["states"].as_array().is_some_and(|s| s.iter().any(|v| v == "disabled"));
+    if name.is_empty() || disabled {
+        return None;
+    }
+    let short = format!("m{}", full.rsplit(':').next().unwrap_or(full).trim_start_matches('e'));
+    Some((short, Element { full_ref: full.to_string(), role: "menuitem".into(), name: name.to_string(), selected: false }))
+}
+
+/// The window and the menu bar in one view, each under its heading.
+pub fn merge(window: View, menubar: View) -> View {
+    if menubar.text.is_empty() {
+        return window;
+    }
+    let mut refs = window.refs;
+    refs.extend(menubar.refs);
+    View {
+        text: format!("{}\n\nMENU BAR (commands; they act on what is selected in the window):\n{}", window.text, menubar.text),
+        refs,
+        truncated: window.truncated || menubar.truncated,
     }
 }
 
 fn clip(s: &str) -> String {
     let s = s.replace(['\n', '\r', '\t'], " ").replace('"', "'");
-    if s.chars().count() <= MAX_VALUE { s } else { s.chars().take(MAX_VALUE - 1).collect::<String>() + "…" }
+    let s = s.trim();
+    if s.chars().count() <= MAX_VALUE { s.to_string() } else { s.chars().take(MAX_VALUE - 1).collect::<String>() + "…" }
 }
 
-/// The short ref a model meant: "e12", "@s1:e12", "12" and "E12" all mean "e12".
+/// The short ref a model meant: "e12", "@s1:e12", "12" and "E12" all mean "e12"; "m330" stays a menu ref.
 pub fn short_ref(raw: &str) -> String {
     let r = raw.trim().rsplit(':').next().unwrap_or(raw).trim().trim_start_matches('@').to_lowercase();
     if r.chars().all(|c| c.is_ascii_digit()) && !r.is_empty() { format!("e{r}") } else { r }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn snapshot() -> Value {
-        json!({
-            "app": "Mail", "snapshot_id": "s1", "window": {"id": "w1", "title": "Inbox – 2 messages"},
-            "tree": {"role": "window", "name": "Inbox", "children": [
-                {"role": "toolbar", "children": [
-                    {"ref_id": "@s1:e1", "role": "button", "name": "Reply"},
-                    {"ref_id": "@s1:e2", "role": "button", "name": "Delete"}
-                ]},
-                {"role": "table", "name": "Messages", "children": [
-                    {"ref_id": "@s1:e3", "role": "row", "name": "Marie Curie, Dinner on Friday?", "states": ["selected", "enabled"]}
-                ]},
-                {"role": "statictext", "value": "Hi!\nAre you free for dinner on \"Friday\"?"},
-                {"role": "group"}
-            ]}
-        })
-    }
-
-    #[test]
-    fn compacts_to_ref_lines_and_text_lines() {
-        let v = compact(&snapshot(), 9000);
-        assert_eq!(
-            v.text,
-            "window \"Inbox – 2 messages\"\n  e1 button \"Reply\"\n  e2 button \"Delete\"\n text \"Messages\"\n  e3 row \"Marie Curie, Dinner on Friday?\" [selected]\n text \"Hi! Are you free for dinner on 'Friday'?\""
-        );
-        assert_eq!(v.refs["e1"], Element { full_ref: "@s1:e1".into(), role: "button".into(), name: "Reply".into() });
-        assert!(!v.truncated);
-    }
-
-    #[test]
-    fn long_views_are_cut_and_say_so() {
-        let v = compact(&snapshot(), 60);
-        assert!(v.truncated);
-        assert!(v.text.ends_with("(more elements not shown)"));
-        assert!(v.text.len() < 120);
-    }
-
-    #[test]
-    fn refs_are_read_loosely() {
-        for r in ["e12", "@s1:e12", "12", "E12", " e12 "] {
-            assert_eq!(short_ref(r), "e12", "{r}");
-        }
-    }
-}
+#[path = "view_tests.rs"]
+mod tests;

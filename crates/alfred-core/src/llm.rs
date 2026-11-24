@@ -118,7 +118,9 @@ impl<T: ChatModel + Sync> ChatModel for std::sync::Arc<T> {
 /// The model the config asks for.
 pub fn from_config(cfg: &LlmConfig) -> Box<dyn ChatModel> {
     match cfg.provider {
-        Provider::Ollama => Box::new(Ollama::new(&cfg.base_url, &cfg.model, cfg.timeout_secs)),
+        Provider::Ollama => Box::new(
+            Ollama::new(&cfg.base_url, &cfg.model, cfg.timeout_secs).with_context(cfg.context_tokens).with_max_tokens(cfg.max_reply_tokens),
+        ),
         Provider::OpenAi => Box::new(OpenAiCompat::new(&cfg.base_url, &cfg.model, cfg.api_key(), cfg.timeout_secs)),
     }
 }
@@ -182,6 +184,10 @@ pub struct Ollama {
     agent: ureq::Agent,
     /// Ollama refuses `think` for models that can't think; remember that after the first refusal.
     send_think: Mutex<bool>,
+    /// The context window to ask for. Too small and a long prompt pushes out the instructions at its start.
+    context: u32,
+    /// The most tokens one reply may use.
+    max_tokens: u32,
 }
 
 impl Ollama {
@@ -191,7 +197,19 @@ impl Ollama {
             model: model.to_string(),
             agent: agent(timeout_secs),
             send_think: Mutex::new(true),
+            context: 8192,
+            max_tokens: MAX_REPLY_TOKENS,
         }
+    }
+
+    pub fn with_max_tokens(mut self, tokens: u32) -> Self {
+        self.max_tokens = tokens.clamp(32, 4096);
+        self
+    }
+
+    pub fn with_context(mut self, tokens: u32) -> Self {
+        self.context = tokens.clamp(2048, 131_072);
+        self
     }
 
     fn message_json(m: &ChatMessage) -> Value {
@@ -221,7 +239,7 @@ impl ChatModel for Ollama {
             "messages": messages.iter().map(Self::message_json).collect::<Vec<_>>(),
             "stream": false,
             "keep_alive": "30m",
-            "options": { "temperature": 0.1, "num_ctx": 4096, "num_predict": MAX_REPLY_TOKENS },
+            "options": { "temperature": 0.1, "num_ctx": self.context, "num_predict": self.max_tokens },
         });
         if tools.as_array().is_some_and(|a| !a.is_empty()) {
             body["tools"] = tools.clone();
@@ -236,7 +254,7 @@ impl ChatModel for Ollama {
             "stream": false,
             "keep_alive": "30m",
             "format": schema,
-            "options": { "temperature": 0.0, "num_ctx": 4096, "num_predict": MAX_REPLY_TOKENS },
+            "options": { "temperature": 0.0, "num_ctx": self.context, "num_predict": self.max_tokens },
         });
         let v = self.send(body)?;
         json_object(v["message"]["content"].as_str().unwrap_or_default())
@@ -405,11 +423,13 @@ impl ChatModel for OpenAiCompat {
 pub struct Scripted {
     replies: Mutex<VecDeque<Result<ModelReply, LlmError>>>,
     pub seen: Mutex<Vec<Vec<ChatMessage>>>,
+    /// The tools or schema passed with each call.
+    pub schemas: Mutex<Vec<Value>>,
 }
 
 impl Scripted {
     pub fn new(replies: impl IntoIterator<Item = Result<ModelReply, LlmError>>) -> Self {
-        Self { replies: Mutex::new(replies.into_iter().collect()), seen: Mutex::default() }
+        Self { replies: Mutex::new(replies.into_iter().collect()), seen: Mutex::default(), schemas: Mutex::default() }
     }
 
     pub fn says(text: &str) -> Result<ModelReply, LlmError> {
@@ -422,9 +442,12 @@ impl Scripted {
 }
 
 impl ChatModel for Scripted {
-    fn chat(&self, messages: &[ChatMessage], _tools: &Value) -> Result<ModelReply, LlmError> {
+    fn chat(&self, messages: &[ChatMessage], tools: &Value) -> Result<ModelReply, LlmError> {
         if let Ok(mut s) = self.seen.lock() {
             s.push(messages.to_vec());
+        }
+        if let Ok(mut s) = self.schemas.lock() {
+            s.push(tools.clone());
         }
         self.replies.lock().ok().and_then(|mut r| r.pop_front()).unwrap_or_else(|| Scripted::says(""))
     }

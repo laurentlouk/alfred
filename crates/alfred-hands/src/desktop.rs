@@ -61,6 +61,21 @@ impl Desktop for AgentDesktop {
         if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
             pipe.write_all(text.as_bytes()).ok();
         }
+        // Read while it runs: a snapshot of a real app is far bigger than a pipe's buffer, and a child that
+        // can't finish writing never exits.
+        let reader = child.stdout.take().map(|mut out| {
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                out.read_to_string(&mut text).ok();
+                text
+            })
+        });
+        let drain = child.stderr.take().map(|mut err| {
+            std::thread::spawn(move || {
+                let mut sink = Vec::new();
+                err.read_to_end(&mut sink).ok();
+            })
+        });
         let started = Instant::now();
         loop {
             match child.try_wait() {
@@ -79,10 +94,10 @@ impl Desktop for AgentDesktop {
                 Err(e) => return Err(DesktopError::local("SPAWN", e.to_string())),
             }
         }
-        let mut out = String::new();
-        if let Some(mut s) = child.stdout.take() {
-            s.read_to_string(&mut out).ok();
+        if let Some(d) = drain {
+            d.join().ok();
         }
+        let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
         parse_envelope(&out)
     }
 }
@@ -134,6 +149,21 @@ mod tests {
         };
         let v = AgentDesktop::new(program).call(&args(["version"]), None).unwrap();
         assert!(v["version"].as_str().is_some_and(|s| !s.is_empty()), "{v}");
+    }
+
+    #[test]
+    fn output_bigger_than_a_pipe_does_not_hang() {
+        // A stand-in program printing a 300 KB envelope, like a snapshot of a real app.
+        let dir = std::env::temp_dir().join(format!("alfred-big-output-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake-agent-desktop");
+        let filler = "x".repeat(300_000);
+        std::fs::write(&script, format!("#!/bin/sh\necho '{{\"ok\":true,\"data\":{{\"big\":\"{filler}\"}}}}'\n")).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&script).status().unwrap();
+        let d = AgentDesktop { program: script, timeout: Duration::from_secs(10) };
+        let v = d.call(&args(["snapshot"]), None).unwrap();
+        assert_eq!(v["big"].as_str().unwrap().len(), 300_000);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

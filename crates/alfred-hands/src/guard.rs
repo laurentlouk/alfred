@@ -28,6 +28,10 @@ const RISKY: &[&str] = &[
     "uninstall",
     "confirm",
     "accept",
+    "shut down",
+    "restart",
+    "lock screen",
+    "force quit",
     "approve",
     // French
     "envoyer",
@@ -57,6 +61,20 @@ const RISKY: &[&str] = &[
     "confirmer",
     "accepter",
     "approuver",
+    "éteindre",
+    "eteindre",
+    "redémarrer",
+    "redemarrer",
+    "fermer la session",
+    "verrouiller",
+    "forcer à quitter",
+    "éteindre",
+    "eteindre",
+    "redémarrer",
+    "redemarrer",
+    "fermer la session",
+    "verrouiller",
+    "forcer à quitter",
 ];
 
 /// True when clicking an element with this name might do something that can't be undone.
@@ -72,7 +90,22 @@ mod tests {
 
     #[test]
     fn irreversible_names_are_caught_in_both_languages() {
-        for n in ["Send", "Send Message", "Envoyer", "Delete", "Move to Trash", "Supprimer le message", "Pay now", "Sign Out", "Publier"] {
+        for n in [
+            "Send",
+            "Send Message",
+            "Envoyer",
+            "Delete",
+            "Move to Trash",
+            "Supprimer le message",
+            "Pay now",
+            "Sign Out",
+            "Publier",
+            "Shut Down…",
+            "Éteindre…",
+            "Redémarrer",
+            "Fermer la session laurent",
+            "Verrouiller l’écran",
+        ] {
             assert!(is_risky(n), "{n}");
         }
     }

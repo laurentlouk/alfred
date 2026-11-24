@@ -124,11 +124,13 @@ A bigger model follows looser requests better: set `model = "qwen3.5:0.8b"` or `
 brew install agent-desktop
 ```
 
-Then allow Alfred in System Settings → Privacy & Security → Accessibility (or your terminal, for the command line). Alfred looks at the app's window, picks one step, acts, and looks again, at most 8 steps. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:4b` by default):
+Then allow Alfred in System Settings → Privacy & Security → Accessibility (or your terminal, for the command line). Alfred looks at the app's window, picks one step, acts, and looks again, at most 8 steps. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:8b` by default):
 
 ```bash
-ollama pull qwen3:4b
+ollama pull qwen3:8b
 ```
+
+Tested live in Mail: `qwen3:4b` answers questions about what's on screen (who sent the latest email) but loses its place in multi-step tasks; `qwen3:8b` plans and follows menu commands (select a message, Reply). Mail's message body is a web view that can't be filled without physical keystrokes, which Alfred never sends, so Mail drafts are better served by Mail's own scripting.
 
 Measured with `alfred eval --model eval/apps.toml` (15 requests: named and loose shortcuts, on-screen tasks):
 
@@ -169,7 +171,7 @@ trusted = []                 # shortcut names that run without asking when Alfre
 
 [desktop]
 enabled = true               # on-screen actions, when agent-desktop is installed
-model = "qwen3:4b"           # the model that reads app windows
+model = "qwen3:8b"           # the model that reads app windows
 max_steps = 8
 ```
 

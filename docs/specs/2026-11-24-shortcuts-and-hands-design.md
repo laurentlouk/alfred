@@ -85,6 +85,27 @@ home devices, Slack. Two complementary bridges do that:
 | `qwen3:0.6b` | 1 right (9%) | 33% | about 0.2 s |
 | `qwen3:4b` | 10 right (91%) | 93% | 0.5 to 1 s |
 
+### Live runs in Mail (2026-11-24, French-language UI, owner's real inbox)
+
+| Task | Model driving the steps | Result |
+| --- | --- | --- |
+| "who sent my most recent email and what is it about" | `qwen3:4b` | Right answer in 34 s, read from the message list |
+| reply to the newest email as a draft | `qwen3:4b` | Never reached Reply; stopped honestly after 8 steps |
+| same | `qwen3:8b` | Planned in French ("Répondre"), selected the message, opened the reply window; typed into the Reply-To field because Mail's body is a web view with no actionable element |
+
+What the live runs fixed in the code: a pipe deadlock on large snapshots (output is now read while the
+program runs), views that hid message subjects (budget shared between regions, rows kept whole), toolbar
+buttons with no names (the menu bar is now part of the view), invented refs (the `ref` field is an enum of
+the refs on screen), runaway output under a grammar (every string has a `maxLength`), repeated no-ops
+(clicking what is already selected is skipped; a ref clicked twice for nothing is taken out of the
+grammar), false success claims (a run that circles is reported as unfinished with only what was really
+done), and losing the thread (a short plan is written first and shown at every step).
+
+What they established: reading works on 4B; menu navigation needs 8B (now the default for
+`[desktop] model`); and Mail's compose body can't be filled through the accessibility tree without
+physical keystrokes, which Alfred doesn't use. Mail drafts belong to a typed tool on Mail's own scripting
+(`reply`, then set the content); on-screen control is for apps without scripting or Shortcuts.
+
 The router handled the 4 requests that named a shortcut, at 100%. `qwen3:4b`'s miss: "switch on the light"
 picked "Lights Off", which the confirmation for model-picked shortcuts catches. On the owner's own shortcuts
 (French names), `qwen3:4b` mapped "start the vacuum", "stop the vacuum cleaner" and "make the living room

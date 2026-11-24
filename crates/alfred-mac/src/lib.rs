@@ -241,6 +241,21 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("couldn't start {program}: {e}"))?;
+    // Read while it runs, so a chatty command can't block on a full pipe.
+    let out_reader = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            s.read_to_string(&mut text).ok();
+            text
+        })
+    });
+    let err_reader = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            s.read_to_string(&mut text).ok();
+            text
+        })
+    });
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -254,14 +269,8 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
             Err(e) => return Err(format!("{program}: {e}")),
         }
     };
-    let mut out = String::new();
-    let mut err = String::new();
-    if let Some(mut s) = child.stdout.take() {
-        s.read_to_string(&mut out).ok();
-    }
-    if let Some(mut s) = child.stderr.take() {
-        s.read_to_string(&mut err).ok();
-    }
+    let out = out_reader.and_then(|r| r.join().ok()).unwrap_or_default();
+    let err = err_reader.and_then(|r| r.join().ok()).unwrap_or_default();
     if status.success() { Ok(out) } else { Err(if err.trim().is_empty() { format!("{program} failed ({status})") } else { err }) }
 }
 

@@ -154,12 +154,12 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
         "type": "object",
         "properties": {
             "action": { "type": "string", "enum": actions },
-            "app": { "type": "string" },
-            "text": { "type": "string" },
-            "query": { "type": "string" },
-            "url": { "type": "string" },
+            "app": { "type": "string", "maxLength": 60 },
+            "text": { "type": "string", "maxLength": 1500 },
+            "query": { "type": "string", "maxLength": 300 },
+            "url": { "type": "string", "maxLength": 500 },
             "minutes": { "type": "integer" },
-            "reply": { "type": "string" },
+            "reply": { "type": "string", "maxLength": 600 },
         },
         "required": ["action"],
     });
