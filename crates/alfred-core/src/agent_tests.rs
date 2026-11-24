@@ -515,12 +515,35 @@ fn the_model_knows_what_the_user_is_looking_at_and_what_alfreds_tab_shows() {
         Some("https://www.pokemon.com/us/"),
     ));
     a.handle("what is the pokemon you see?", &d, &mut quiet());
-    let system = model.seen.lock().unwrap()[0][0].content.clone();
+    let seen = model.seen.lock().unwrap();
+    let request = &seen[0].last().unwrap().content;
     assert!(
-        system.contains("Right now the user is in Google Chrome, looking at youtube.com. Alfred's own browser tab shows pokemon.com."),
-        "{system}"
+        request.contains("Right now the user is in Google Chrome, looking at youtube.com. Alfred's own browser tab shows pokemon.com."),
+        "{request}"
     );
+    assert!(request.ends_with("what is the pokemon you see?"), "the request itself comes last: {request}");
     assert_eq!(d.actions(), vec![Action::UseBrowser { task: "say which Pokémon the page shows".into(), url: None }]);
+}
+
+#[test]
+fn the_start_of_the_prompt_never_changes_so_the_model_can_reuse_it() {
+    // Ollama reuses what it read of a prompt up to the first change: where the user is changes often, so it
+    // goes after the instructions and the tools, never inside them.
+    let model = std::sync::Arc::new(Scripted::new([Scripted::says("Hello."), Scripted::says("Hello again.")]));
+    let mut a = Agent::new(Some(Box::new(model.clone()))).with_catalog(crate::catalog::Catalog { browser: true, ..Default::default() });
+    let here = DryRun::new().with_context(crate::context::Context::new(Some("Google Chrome"), Some("https://www.youtube.com/"), None));
+    let there = DryRun::new().with_context(crate::context::Context::new(Some("Claude"), None, Some("https://www.pokemon.com/")));
+    a.handle("hello", &here, &mut quiet());
+    a.handle("hello", &there, &mut quiet());
+    let seen = model.seen.lock().unwrap();
+    assert_eq!(seen[0][0].content, seen[1][0].content, "the instructions are the same whatever the user is looking at");
+    assert!(seen[1].last().unwrap().content.contains("Right now the user is in Claude."));
+    assert_eq!(a_history_user(&seen[1]), "hello", "the note about where the user was isn't kept in the history");
+}
+
+/// The first earlier request in a conversation sent to the model, as the history holds it.
+fn a_history_user(messages: &[crate::llm::ChatMessage]) -> String {
+    messages.iter().skip(1).find(|m| m.role == Role::User).map(|m| m.content.clone()).unwrap_or_default()
 }
 
 #[test]
@@ -530,4 +553,18 @@ fn routed_requests_never_ask_for_the_context() {
     let d = DryRun::new().with_context(crate::context::Context::new(Some("Claude"), None, None));
     a.handle("open notes", &d, &mut quiet());
     assert_eq!(d.context_reads(), 0);
+}
+
+#[test]
+fn warming_up_reads_the_same_instructions_a_request_will_and_keeps_nothing() {
+    let model = std::sync::Arc::new(Scripted::new([Scripted::says("Rome.")]));
+    let mut a = Agent::new(Some(Box::new(model.clone())))
+        .with_tool_mode(ToolMode::Native)
+        .with_catalog(crate::catalog::Catalog { browser: true, ..Default::default() });
+    a.warm_up();
+    a.handle("what's the capital of Italy?", &DryRun::new(), &mut quiet());
+    let seen = model.seen.lock().unwrap();
+    assert_eq!(model.schemas.lock().unwrap()[0], json!("warm"), "the first call only warms the model");
+    assert_eq!(seen[0][0].content, seen[1][0].content, "same instructions, so the request reuses what the warm-up read");
+    assert_eq!(seen[1].len(), 2, "the warm-up left nothing in the history: {:?}", seen[1]);
 }

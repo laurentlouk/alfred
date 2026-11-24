@@ -162,6 +162,9 @@ pub struct LlmConfig {
     /// fast while a larger `model` decides. Unset, `model` does both.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub think_model: Option<String>,
+    /// How long Ollama keeps a model loaded after its last use ("4h", "30m", "-1" for as long as Ollama
+    /// runs). Loading a large model again takes seconds: 11 s for a 21 GB one.
+    pub keep_alive: String,
 }
 
 impl Default for LlmConfig {
@@ -179,6 +182,7 @@ impl Default for LlmConfig {
             thinking: Thinking::Auto,
             think_tokens: 2048,
             think_model: None,
+            keep_alive: "4h".into(),
         }
     }
 }
@@ -332,6 +336,13 @@ mod tests {
         assert_eq!(c.llm.base_url, "http://127.0.0.1:11434");
         assert_eq!(c.search.engine, "duckduckgo");
         assert!(c.voice.speak);
+    }
+
+    #[test]
+    fn models_stay_loaded_for_hours_by_default() {
+        assert_eq!(Config::default().llm.keep_alive, "4h", "a 21 GB model takes 11 s to load again");
+        let c: Config = toml::from_str("[llm]\nkeep_alive = \"-1\"\n").unwrap();
+        assert_eq!(c.llm.keep_alive, "-1");
     }
 
     #[test]

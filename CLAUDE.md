@@ -13,6 +13,7 @@ A local, voice-first assistant for the Mac in Rust, with a Rune UI. Start with `
 - `cargo run -p alfred -- --snap out.png --scene conversation --scale 2`: render the panel headlessly (scenes: idle, listening, thinking, speaking, conversation, confirm).
 - `cargo run -p alfred -- ask --dry-run "…"`: run the brain without touching the Mac (it still reads which app the user is in).
 - `printf 'go to the pokemon website\nwhat pokemon do you see?\n' | cargo run -p alfred -- chat`: a multi-turn conversation on the terminal.
+- `ALFRED_LLM_TRACE=1 cargo run -p alfred -- ask --dry-run "…"`: each model call's time, split into loading, reading the prompt and replying (counts only, never text).
 - `scripts/bundle-macos.sh [--install]`: build `dist/Alfred.app`.
 
 ## Rules

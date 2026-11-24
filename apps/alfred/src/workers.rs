@@ -74,6 +74,9 @@ pub fn spawn(config: Config, me: AppHandle<Ui>) -> Links {
             let (mut agent, exec) = crate::wiring::build(&cfg);
             let label = agent.model_name().unwrap_or_default();
             ui.update(move |s, _| s.model_label = label);
+            // Load the model and its instructions now, so the first request answers in a second, not after
+            // a 20 GB model loads and 2,000 tokens of instructions are read.
+            agent.warm_up();
             for job in brain_rx {
                 let (attempt, turn) = match job {
                     BrainJob::Ask { attempt, text } => {

@@ -103,6 +103,9 @@ pub trait ChatModel: Send {
     }
     /// "gemma4:e4b via Ollama", for logs and the UI footer.
     fn describe(&self) -> String;
+    /// Load the model and read `messages` (and `tools`, or under `schema`) ahead of a real request, so the
+    /// request finds both ready: one token of reply, nothing returned. Models with nothing to warm skip it.
+    fn warm(&self, _messages: &[ChatMessage], _tools: &Value, _schema: Option<&Value>) {}
 }
 
 /// A shared model is still a model (tests keep a handle to inspect what it was asked).
@@ -122,6 +125,10 @@ impl<T: ChatModel + Sync> ChatModel for std::sync::Arc<T> {
     fn describe(&self) -> String {
         (**self).describe()
     }
+
+    fn warm(&self, messages: &[ChatMessage], tools: &Value, schema: Option<&Value>) {
+        (**self).warm(messages, tools, schema)
+    }
 }
 
 /// The model the config asks for.
@@ -131,10 +138,30 @@ pub fn from_config(cfg: &LlmConfig) -> Box<dyn ChatModel> {
             Ollama::new(&cfg.base_url, &cfg.model, cfg.timeout_secs)
                 .with_context(cfg.context_tokens)
                 .with_max_tokens(cfg.max_reply_tokens)
-                .with_think_tokens(cfg.think_tokens),
+                .with_think_tokens(cfg.think_tokens)
+                .with_keep_alive(&cfg.keep_alive),
         ),
         Provider::OpenAi => Box::new(OpenAiCompat::new(&cfg.base_url, &cfg.model, cfg.api_key(), cfg.timeout_secs)),
     }
+}
+
+/// With `ALFRED_LLM_TRACE` set, where one Ollama call's time went, on stderr: loading the model, reading
+/// the prompt, writing the reply. Counts only, never the prompt or the reply.
+fn trace_timing(model: &str, v: &Value) {
+    if std::env::var_os("ALFRED_LLM_TRACE").is_none() {
+        return;
+    }
+    let s = |k: &str| v[k].as_f64().unwrap_or(0.0) / 1e9;
+    let n = |k: &str| v[k].as_u64().unwrap_or(0);
+    eprintln!(
+        "[llm] {model}: {:.2} s = load {:.2} + prompt {} tokens {:.2} + reply {} tokens {:.2}",
+        s("total_duration"),
+        s("load_duration"),
+        n("prompt_eval_count"),
+        s("prompt_eval_duration"),
+        n("eval_count"),
+        s("eval_duration")
+    );
 }
 
 /// The model that thinks hard questions through, when `think_model` names one other than `model`.
@@ -202,6 +229,8 @@ pub struct Ollama {
     agent: ureq::Agent,
     /// Ollama refuses `think` for models that can't think; remember that after the first refusal.
     send_think: Mutex<bool>,
+    /// How long Ollama keeps the model loaded after a request.
+    keep_alive: String,
     /// The context window to ask for. Too small and a long prompt pushes out the instructions at its start.
     context: u32,
     /// The most tokens one reply may use.
@@ -218,6 +247,7 @@ impl Ollama {
             model: model.to_string(),
             agent: agent(timeout_secs),
             send_think: Mutex::new(true),
+            keep_alive: "4h".into(),
             context: 8192,
             max_tokens: MAX_REPLY_TOKENS,
             think_tokens: 2048,
@@ -232,6 +262,13 @@ impl Ollama {
 
     pub fn with_max_tokens(mut self, tokens: u32) -> Self {
         self.max_tokens = tokens.clamp(32, 4096);
+        self
+    }
+
+    pub fn with_keep_alive(mut self, keep_alive: &str) -> Self {
+        if !keep_alive.trim().is_empty() {
+            self.keep_alive = keep_alive.trim().to_string();
+        }
         self
     }
 
@@ -266,7 +303,7 @@ impl ChatModel for Ollama {
             "model": self.model,
             "messages": messages.iter().map(Self::message_json).collect::<Vec<_>>(),
             "stream": false,
-            "keep_alive": "30m",
+            "keep_alive": self.keep_alive,
             "options": { "temperature": 0.1, "num_ctx": self.context, "num_predict": self.max_tokens },
         });
         if tools.as_array().is_some_and(|a| !a.is_empty()) {
@@ -280,12 +317,32 @@ impl ChatModel for Ollama {
             "model": self.model,
             "messages": messages.iter().map(Self::message_json).collect::<Vec<_>>(),
             "stream": false,
-            "keep_alive": "30m",
+            "keep_alive": self.keep_alive,
             "format": schema,
             "options": { "temperature": 0.0, "num_ctx": self.context, "num_predict": self.max_tokens },
         });
         let v = self.send(body)?;
         json_object(v["message"]["content"].as_str().unwrap_or_default())
+    }
+
+    /// The same request as [`ChatModel::chat`] or [`ChatModel::chat_json`] (the same options, or Ollama would
+    /// load the model again), cut to one token: Ollama loads the model and keeps what it read, so the next
+    /// request that starts the same way reads only what is new.
+    fn warm(&self, messages: &[ChatMessage], tools: &Value, schema: Option<&Value>) {
+        let mut body = json!({
+            "model": self.model,
+            "messages": messages.iter().map(Self::message_json).collect::<Vec<_>>(),
+            "stream": false,
+            "keep_alive": self.keep_alive,
+            "options": { "temperature": 0.1, "num_ctx": self.context, "num_predict": 1 },
+        });
+        match schema {
+            Some(s) => body["format"] = s.clone(),
+            None if tools.as_array().is_some_and(|a| !a.is_empty()) => body["tools"] = tools.clone(),
+            None => {}
+        }
+        let patient = agent(self.timeout_secs.max(120));
+        self.send_on(&patient, body, false).ok();
     }
 
     /// Thinking on, with room for the thoughts: a larger token budget and a longer wait. Ollama returns the
@@ -295,7 +352,7 @@ impl ChatModel for Ollama {
             "model": self.model,
             "messages": messages.iter().map(Self::message_json).collect::<Vec<_>>(),
             "stream": false,
-            "keep_alive": "30m",
+            "keep_alive": self.keep_alive,
             "options": { "temperature": 0.3, "num_ctx": self.context, "num_predict": self.think_tokens },
         });
         let patient = agent(self.timeout_secs.max(180));
@@ -335,6 +392,7 @@ impl Ollama {
         if status >= 400 {
             return Err(LlmError::Http { status, message: error_message(&v) });
         }
+        trace_timing(&self.model, &v);
         Ok(v)
     }
 
@@ -574,6 +632,16 @@ impl ChatModel for Scripted {
             }
             None => json!({ "action": "chat", "reply": reply.content }),
         })
+    }
+
+    /// Records the call as `"warm"` in `schemas`, with no reply used.
+    fn warm(&self, messages: &[ChatMessage], _tools: &Value, _schema: Option<&Value>) {
+        if let Ok(mut s) = self.seen.lock() {
+            s.push(messages.to_vec());
+        }
+        if let Ok(mut s) = self.schemas.lock() {
+            s.push(json!("warm"));
+        }
     }
 
     /// Records the call as `"reason"` in `schemas`, so tests can tell a thinking answer from a quick one.

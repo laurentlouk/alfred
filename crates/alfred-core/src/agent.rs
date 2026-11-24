@@ -39,6 +39,10 @@ fn native_prompt(catalog: &Catalog) -> String {
     p
 }
 
+/// How to read "this" and "here", in the instructions on every request; where the user is right now comes
+/// in brackets with the request itself.
+const HERE: &str = "A note in brackets before a request says where the user is right now: when they say this, here, this page, this app or what you see, they mean what they are looking at, and a follow-up about the site Alfred opened goes to Alfred's tab.";
+
 /// For an answer that needs reasoning: the model thinks first (its thoughts are never shown), then speaks.
 const REASONING_PROMPT: &str = "You are Alfred, a discreet, warm and efficient butler-style assistant living on the user's Mac. \
 Think the question through carefully, check your result, then answer. \
@@ -149,6 +153,29 @@ impl Agent {
             Thinking::Never => false,
             Thinking::Always => true,
             Thinking::Auto => flagged || needs_reasoning(text),
+        }
+    }
+
+    /// The instructions every request starts with, identical from one request to the next (see `ask_model`).
+    /// Small models follow a short, focused prompt best: in structured mode the decision guide leads.
+    fn instructions(&self) -> String {
+        let system = match self.mode {
+            ToolMode::Structured => {
+                format!("You are Alfred, a warm, discreet assistant on the user's Mac. {}", decision_guide_for(&self.catalog))
+            }
+            ToolMode::Native => native_prompt(&self.catalog),
+        };
+        format!("{system}\n{HERE}")
+    }
+
+    /// Load the model and have it read the instructions and the tools now (at launch), so the first request
+    /// neither waits for a 20 GB model to load nor reads 2,000 tokens of instructions: only what is new.
+    pub fn warm_up(&self) {
+        let Some(model) = self.model.as_ref() else { return };
+        let messages = [ChatMessage::new(Role::System, self.instructions()), ChatMessage::new(Role::User, "Hello.")];
+        match self.mode {
+            ToolMode::Native => model.warm(&messages, &tools_json_for(&self.catalog), None),
+            ToolMode::Structured => model.warm(&messages, &Value::Null, Some(&decision_schema_for(&self.catalog))),
         }
     }
 
@@ -281,27 +308,20 @@ impl Agent {
             );
         };
         on(Event::Thinking);
-        // Small models follow a short, focused prompt best: in structured mode the decision guide leads.
-        let system = match self.mode {
-            ToolMode::Structured => {
-                format!("You are Alfred, a warm, discreet assistant on the user's Mac. {}", decision_guide_for(&self.catalog))
-            }
-            ToolMode::Native => native_prompt(&self.catalog),
-        };
-        // Where the user is and what Alfred's tab shows, so "this page", "here" and follow-ups about a site
-        // resolve. Only names and hosts: nothing written by others.
-        let system = match exec.context().describe() {
-            Some(now) => format!(
-                "{system}\n{now} When the user says this, here, this page, this app or what you see, they mean what they are looking at; a follow-up about the site Alfred opened goes to Alfred's tab."
-            ),
-            None => system,
-        };
+        let system = self.instructions();
+        // The instructions and the tools are the same on every request, so the model reuses what it already
+        // read of them (2,000 tokens: 3 s to read again, 0.1 s reused). What changes, where the user is right
+        // now, goes last, beside the request, and never into the history.
         let mut messages = vec![ChatMessage::new(Role::System, system)];
         for (user, alfred) in &self.history {
             messages.push(ChatMessage::new(Role::User, user.clone()));
             messages.push(ChatMessage::new(Role::Assistant, alfred.clone()));
         }
-        messages.push(ChatMessage::new(Role::User, text));
+        let request = match exec.context().describe() {
+            Some(now) => format!("[{now}]\n\n{text}"),
+            None => text.to_string(),
+        };
+        messages.push(ChatMessage::new(Role::User, request));
         let tools: Value = tools_json_for(&self.catalog);
         let schema: Value = decision_schema_for(&self.catalog);
         let mut no_schema = false;

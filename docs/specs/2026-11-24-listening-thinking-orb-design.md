@@ -108,6 +108,16 @@ Alfred v1 worked, but daily use showed five gaps the owner asked to close:
     on live Wikipedia tasks (headless, agent-browser 0.44.0) it finished 1 of 3 against 3 of 3 for
     `qwen3:8b`: it took Wikipedia's "did you mean: rule programming language" suggestion both times it was
     asked for the first result on Rune, though it was faster on the one it finished (34 s against 56 s).
+11a. **A request reads only what is new (added 2026-11-24: requests took 3 to 20 s).** Every request
+    carries about 2,200 tokens of instructions and tools. Ollama keeps what it read of a model's last
+    prompt and reuses it up to the first difference, so the instructions never change from one request to
+    the next: where the user is (C1 of the browser design) moved from the instructions to a bracketed note
+    before the request, and never enters the history. Measured with `ALFRED_LLM_TRACE=1` on
+    `qwen3.5:35b`: reading the prompt again took 3.2 s, reused 0.1 s. Ollama also unloaded a model after the
+    30 minutes Alfred asked for, and loading 21 GB took 11.5 s, so `[llm] keep_alive` (default 4 h) keeps
+    it, and the app warms the model at launch with the same instructions and tools, one token of reply.
+    Requests then took 0.8 to 2.4 s from the command line. *Rejected:* trimming the tools first (the
+    reuse alone took reading from 3 s to 0.1 s; shorter definitions would only shorten the first read).
 12a. **Smaller and quieter (added 2026-11-24, at the owner's request).** Answers are spoken, so they are
     no longer written: only a question waiting for a yes shows, with its Yes and No (and, when Alfred has
     no voice, its latest answer). Nothing is painted behind text, not even the soft shadow that kept it

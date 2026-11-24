@@ -210,6 +210,7 @@ base_url = "http://127.0.0.1:11434"
 model = "qwen3:0.6b"
 thinking = "auto"            # think hard questions through; "never" or "always"
 think_tokens = 2048          # room for a thought-through answer
+keep_alive = "4h"            # how long Ollama keeps the model loaded; Alfred warms it at launch
 # think_model = "gemma4:e4b" # another model for the thinking (unset: `model` thinks)
 
 [voice]
