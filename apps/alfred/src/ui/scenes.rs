@@ -23,6 +23,7 @@ fn turn(you: &str, alfred: &str, chips: &[(&str, ChipState)]) -> Turn {
 fn listening(s: &mut Ui) {
     s.mode = Mode::Listening;
     s.level = 0.7;
+    s.input.replace_text("open Notes and save pick up the");
 }
 
 fn thinking(s: &mut Ui) {

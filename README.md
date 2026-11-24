@@ -13,8 +13,8 @@ Summon it, say or type what you need, and it opens your apps, saves notes, adds 
 
 ## What it does
 
-- **Summon it anywhere.** Press <kbd>⌃⇧Space</kbd> and the panel drops in at the top of the screen you're on. <kbd>esc</kbd> hides it.
-- **Talk or type.** Click the orb (or <kbd>⌘L</kbd>) and speak; Alfred stops listening when you do.
+- **Summon it anywhere.** Press <kbd>⌃⇧Space</kbd> and the panel drops in at the top of the screen you're on, or find Alfred in the Dock and with <kbd>⌘Tab</kbd> like any app. <kbd>esc</kbd> puts it away.
+- **Talk or type.** Click the orb (or <kbd>⌘L</kbd>) and speak: your words appear in the field as you say them, and Alfred stops listening when you do.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches Google, opens links, tells the time.
 - **It reads your mail and drafts replies.** "Read my last email", "reply to it saying I'll be there at 3": the reply opens in Mail for you to check and send. Alfred never sends mail.
 - **It runs your Shortcuts.** "Run Good Morning", or just "start the vacuum" when you have a shortcut for it.
@@ -164,7 +164,7 @@ speed = 1.05
 
 [ui]
 shortcut = "ctrl+shift+space"   # macOS keeps ⌃Space and ⌃⌥Space for switching keyboards
-hide_on_blur = true
+hide_on_blur = false        # true: put the panel away when another app comes forward
 
 [search]
 engine = "google"            # duckduckgo, bing

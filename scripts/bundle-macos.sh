@@ -34,7 +34,6 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Alfred listens when you click the orb, and transcribes on this Mac.</string>
   <key>NSAppleEventsUsageDescription</key><string>Alfred saves notes in Notes, adds reminders and quits apps when you ask it to.</string>

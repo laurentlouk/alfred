@@ -146,13 +146,14 @@ impl Default for VoiceConfig {
 pub struct UiConfig {
     /// The global shortcut that summons Alfred, in Rune's accelerator syntax.
     pub shortcut: String,
-    /// Hide the panel when it loses focus (another app comes forward).
+    /// Hide the panel when another app comes forward. Off by default: the panel then waits behind that
+    /// app's windows like any app's, and ⌘Tab or the Dock icon brings it back.
     pub hide_on_blur: bool,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { shortcut: "ctrl+shift+space".into(), hide_on_blur: true }
+        Self { shortcut: "ctrl+shift+space".into(), hide_on_blur: false }
     }
 }
 

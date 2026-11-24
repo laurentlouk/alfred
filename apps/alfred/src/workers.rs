@@ -1,7 +1,7 @@
 //! The UI's two helpers, each on its own thread so the window never waits:
 //!
 //! - the brain: the agent (router, model, tools) and the Mac executor;
-//! - the voice: Kokoro and Moonshine, loaded once, plus playback.
+//! - the voice: Kokoro and Moonshine, loaded once, plus playback and the live text while you speak.
 //!
 //! Results land on the UI thread through `AppHandle::update`, tagged with the request's attempt number
 //! so an answer to a superseded request changes nothing.
@@ -24,8 +24,19 @@ pub enum BrainJob {
 }
 
 pub enum VoiceJob {
-    Speak { attempt: u64, text: String },
-    Transcribe { attempt: u64, path: PathBuf },
+    Speak {
+        attempt: u64,
+        text: String,
+    },
+    Transcribe {
+        attempt: u64,
+        path: PathBuf,
+    },
+    /// What has been said so far in a recording still in progress, for the live text.
+    Peek {
+        attempt: u64,
+        path: PathBuf,
+    },
 }
 
 /// What the UI holds to reach its helpers.
@@ -93,6 +104,10 @@ pub fn spawn(config: Config, me: AppHandle<Ui>) -> Links {
                         };
                         std::fs::remove_file(&path).ok();
                         ui.update(move |s, _| s.on_heard(attempt, text));
+                    }
+                    VoiceJob::Peek { attempt, path } => {
+                        let text = listener.as_ref().map(|l| l.transcribe_partial(&path)).unwrap_or_default();
+                        ui.update(move |s, _| s.on_partial(attempt, text));
                     }
                 }
             }

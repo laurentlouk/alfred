@@ -30,14 +30,17 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
 1. **Rust workspace, UI in Rune pinned to a `dev` revision** (`b3503d9`, toolchain 1.99.1, every
    `[patch.crates-io]` entry at the same rev, as Rune's README requires). *Rejected:* SwiftUI (not Rune),
    Tauri plus a web UI (heavier, and not what was asked).
-2. **One accessory app (no Dock icon) with a launcher panel summoned by a global shortcut**, default
-   `ctrl+shift+space` (configurable). `alt+space` is avoided because the Alfred launcher and ChatGPT already
-   claim it; `ctrl+alt+space`, the first default, turned out to be macOS's "Select next source in Input
-   menu", on whenever a Mac has two keyboard layouts, which takes the keystroke first (found on the owner's
-   Mac, 2026-11-24). Escape or losing focus hides the panel, but only once it has had focus: shown while
-   another app is in front (at launch), it would otherwise vanish before anyone saw it. Rune has no macOS status item yet, so v1 ships
-   without a menu-bar icon. *Rejected:* a regular windowed app (an assistant should be one keystroke away);
-   an always-on overlay (v2).
+2. **A regular app (Dock icon, ⌘Tab) whose one window is drawn as a panel and summoned by a global
+   shortcut**, default `ctrl+shift+space` (configurable). `alt+space` is avoided because the Alfred launcher
+   and ChatGPT already claim it; `ctrl+alt+space`, the first default, turned out to be macOS's "Select next
+   source in Input menu", on whenever a Mac has two keyboard layouts, which takes the keystroke first. Escape
+   puts the panel away (hidden, never closed: in Rune a closed window ends the app's run, shortcut
+   included); a click on the Dock icon brings it back. *Changed after the owner's first use (2026-11-24):*
+   v1 was an accessory app with a floating launcher panel that hid when it lost focus. The owner wanted
+   Alfred in the Dock and in ⌘Tab like other apps, and a launcher panel never makes its app the active
+   one, so switching to Alfred couldn't bring it back. The panel now stays behind other apps' windows
+   (`[ui] hide_on_blur = true` restores hiding). Rune has no macOS status item yet, so there is no
+   menu-bar icon. *Rejected:* an always-on overlay (v2).
 3. **Two-tier brain: a deterministic intent router first, then the LLM agent with tools, then plain chat.**
    Measured on 2026-11-24: `qwen3:0.6b` picked `create_note` for "save a note that I need to buy milk
    tomorrow" in 1.9 s, but returned `body` as an object instead of a string. The router handles the common
@@ -71,6 +74,12 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
    `sherpa-onnx`.** Click the orb to talk. Recording stops on a click, after 1.4 s of silence, or after
    20 s. Measured: 4.4 s of speech transcribed in 55 ms. *Rejected:* whisper.cpp (a bigger model and
    build), Apple SpeechAnalyzer (Objective-C bridging, macOS only).
+   *Live text (added 2026-11-24, at the owner's request):* while you speak, the words appear in the field.
+   Every 0.6 s the voice thread transcribes the recording so far, read from the WAV still being written
+   (its sizes are only filled in when it stops, so the reader takes everything after the `data` chunk). At
+   55 ms for 4 s of speech, re-transcribing the whole recording costs less than a streaming model would to
+   add. A file that can't be read yet shows nothing, and the final transcription is unchanged. *Rejected:*
+   a streaming recognizer (another model to download, English only).
 10. **Models and config live in `~/Library/Application Support/Alfred/`** (`config.toml`, `models/`).
     `alfred setup` downloads Kokoro and Moonshine from the official k2-fsa releases and pulls the Ollama
     model. `alfred doctor` reports what is ready and what is missing.

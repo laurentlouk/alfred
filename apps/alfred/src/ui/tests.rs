@@ -128,3 +128,44 @@ fn shortcuts_print_as_mac_symbols() {
     assert_eq!(pretty_shortcut("ctrl+shift+space"), "⌃⇧Space");
     assert_eq!(pretty_shortcut("cmd+shift+k"), "⌘⇧K");
 }
+
+#[test]
+fn words_appear_in_the_field_while_listening() {
+    let mut ui = Ui::demo();
+    ui.attempt = 4;
+    ui.mode = Mode::Listening;
+    ui.typed = "in Notes,".into();
+    ui.peeking = true;
+    ui.on_partial(4, "save pick up the".into());
+    assert_eq!(ui.input.text, "in Notes, save pick up the", "typed words stay in front");
+    assert!(!ui.peeking, "the next live update may be asked for");
+    ui.on_partial(3, "an older request".into());
+    assert_eq!(ui.input.text, "in Notes, save pick up the", "stale text is ignored");
+    ui.on_partial(4, "  ".into());
+    assert_eq!(ui.input.text, "in Notes, save pick up the", "silence keeps what was shown");
+
+    ui.on_heard(4, "save pick up the dry cleaning".into());
+    assert_eq!(ui.turns.last().unwrap().you, "in Notes, save pick up the dry cleaning");
+    assert_eq!(ui.input.text, "", "the request was sent; the field is clear");
+}
+
+#[test]
+fn nothing_heard_puts_back_what_was_typed() {
+    let mut ui = Ui::demo();
+    ui.attempt = 2;
+    ui.mode = Mode::Transcribing;
+    ui.typed = "remind me".into();
+    ui.input.replace_text("remind me to call");
+    ui.on_heard(2, "".into());
+    assert_eq!(ui.input.text, "remind me");
+    assert_eq!(ui.mode, Mode::Idle);
+}
+
+#[test]
+fn the_listening_scene_shows_live_words() {
+    let (_, setup) = scenes::SCENES.iter().find(|(name, _)| *name == "listening").unwrap();
+    let mut ui = Ui::demo();
+    setup(&mut ui);
+    assert_eq!(ui.input.text, "open Notes and save pick up the");
+    assert!(runtime(ui).find("ask").is_some());
+}

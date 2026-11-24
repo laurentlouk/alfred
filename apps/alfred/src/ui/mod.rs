@@ -1,5 +1,5 @@
-//! The panel: a launcher-style window summoned by a global shortcut, with the orb, a text field, the
-//! conversation and the actions as chips.
+//! The panel: Alfred's window, summoned by a global shortcut, the Dock icon or ⌘Tab, with the orb, a
+//! text field, the conversation and the actions as chips.
 
 pub mod orb;
 mod scenes;
@@ -22,6 +22,8 @@ pub const SIZE: (f32, f32) = (560.0, 640.0);
 const MAX_TURNS: usize = 3;
 /// A recording is "voice" above this meter level (0 to 1).
 const VOICE_LEVEL: f32 = 0.16;
+/// How often the live text is brought up to date while the user speaks, in seconds.
+const PEEK_EVERY: f64 = 0.6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -82,6 +84,13 @@ pub struct Ui {
     /// shown while another app is in front (at launch, from Finder), it never gets focus, and hiding on
     /// that first blur would take it away before anyone saw it.
     had_focus: bool,
+    /// The panel has the keyboard now.
+    focused: bool,
+    /// What was in the field when listening began: the live text follows it.
+    typed: String,
+    /// A live-text transcription is on its way; when the last one was asked for.
+    peeking: bool,
+    last_peek: f64,
     attempt: u64,
     listen: Option<Listen>,
     speech: Option<Speech>,
@@ -106,6 +115,10 @@ impl Ui {
             ears_ready: true,
             shortcut: Config::default().ui.shortcut,
             had_focus: false,
+            focused: false,
+            typed: String::new(),
+            peeking: false,
+            last_peek: 0.0,
             attempt: 0,
             listen: None,
             speech: None,
@@ -198,6 +211,9 @@ impl Ui {
         let recorder = Recorder::to_file(path).format(RecordFormat::Wav).sample_rate(16_000).channels(1);
         recorder.start();
         self.listen = Some(Listen { recorder, started: self.clock, last_voice: self.clock, heard: false });
+        self.typed = self.input.text.trim().to_string();
+        self.peeking = false;
+        self.last_peek = self.clock;
         self.mode = Mode::Listening;
         self.notice = None;
         tx.wake_after(Recorder::METER_INTERVAL);
@@ -214,6 +230,7 @@ impl Ui {
             }
             Ok(recording) => {
                 std::fs::remove_file(&recording.path).ok();
+                self.restore_typed();
                 self.mode = Mode::Idle;
                 self.notice = Some("I didn't hear anything. Click the orb and speak.".into());
             }
@@ -228,7 +245,25 @@ impl Ui {
         if let Some(l) = self.listen.take() {
             l.recorder.cancel();
         }
+        self.restore_typed();
         self.mode = Mode::Idle;
+    }
+
+    /// Put back what was typed before listening, dropping the live text.
+    fn restore_typed(&mut self) {
+        let typed = std::mem::take(&mut self.typed);
+        self.input.replace_text(typed);
+    }
+
+    /// Ask for the live text when it is due: while listening, once speech was heard, one at a time.
+    fn peek_if_due(&mut self) {
+        let (Some(l), Some(links)) = (&self.listen, &self.links) else { return };
+        if self.peeking || !l.heard || self.clock - self.last_peek < PEEK_EVERY {
+            return;
+        }
+        self.peeking = true;
+        self.last_peek = self.clock;
+        links.voice.send(VoiceJob::Peek { attempt: self.attempt, path: l.recorder.path() }).ok();
     }
 
     pub fn stop_speaking(&mut self) {
@@ -247,9 +282,11 @@ impl Ui {
         self.notice = None;
     }
 
+    /// The shortcut: put the panel away when it is in front, else bring it forward (also when it sits
+    /// behind another app's windows).
     fn toggle_visible(&mut self) {
         let Some(l) = &self.links else { return };
-        if l.me.is_visible() {
+        if l.me.is_visible() && self.focused {
             self.hide_panel();
         } else {
             self.had_focus = false;
@@ -257,7 +294,20 @@ impl Ui {
         }
     }
 
+    /// A click on the Dock icon (or opening Alfred again): bring the panel back if it was put away.
+    /// When it already shows, macOS brings it forward itself.
+    fn on_reopen(&mut self, has_visible_windows: bool) -> bool {
+        let Some(l) = &self.links else { return false };
+        if has_visible_windows && l.me.is_visible() {
+            return false;
+        }
+        self.had_focus = false;
+        summon(&l.me);
+        true
+    }
+
     fn on_focus(&mut self, focused: bool) {
+        self.focused = focused;
         if focused {
             self.had_focus = true;
             return;
@@ -344,12 +394,29 @@ impl Ui {
             return;
         }
         if text.trim().is_empty() {
+            self.restore_typed();
             self.mode = Mode::Idle;
             self.notice = Some("I didn't catch that. Try again, or type it.".into());
         } else {
-            self.ask(text);
+            let said = join_said(&std::mem::take(&mut self.typed), &text);
+            self.input.clear();
+            self.ask(said);
         }
     }
+
+    /// The live text: what has been heard so far, shown in the field after anything typed before.
+    pub fn on_partial(&mut self, attempt: u64, text: String) {
+        self.peeking = false;
+        let live = matches!(self.mode, Mode::Listening | Mode::Transcribing);
+        if attempt == self.attempt && live && !text.trim().is_empty() {
+            self.input.replace_text(join_said(&self.typed, &text));
+        }
+    }
+}
+
+/// Typed words and spoken ones, as one request.
+fn join_said(typed: &str, heard: &str) -> String {
+    [typed.trim(), heard.trim()].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// Bring the panel up near the top of the screen the pointer is on, in front and taking the keyboard
@@ -380,6 +447,8 @@ fn poll(s: &mut Ui, t: f64, tx: &mut Tx) -> bool {
             }
             if stop {
                 s.stop_listening(tx);
+            } else {
+                s.peek_if_due();
             }
             level
         }
@@ -454,6 +523,7 @@ pub fn run(args: Vec<String>) {
         .init(move || Ui::live(links))
         .keep_running()
         .global_shortcut(&shortcut, |s, _| s.toggle_visible())
+        .on_reopen(|s, has_visible, _| s.on_reopen(has_visible))
         .on_focus(|s, focused, _| s.on_focus(focused));
     if !args.iter().any(|a| a == "--background") {
         let first = me.clone();
@@ -462,7 +532,10 @@ pub fn run(args: Vec<String>) {
             summon(&first);
         });
     }
-    rune::run_windows_with_args(RunOptions { accessory: true }, Vec::<String>::new(), move |_| {
-        vec![WindowSpec::from_app("alfred", app).configured_options(WindowOptions::launcher_panel())]
+    // A regular app (Dock icon, ⌘Tab) with an ordinary window drawn as a panel: a floating launcher
+    // panel never makes Alfred the active app, so switching to Alfred couldn't bring it back.
+    let window = WindowOptions { visible: false, borderless: true, transparent: true, resizable: false, ..Default::default() };
+    rune::run_windows_with_args(RunOptions { accessory: false }, Vec::<String>::new(), move |_| {
+        vec![WindowSpec::from_app("alfred", app).options(window)]
     });
 }
