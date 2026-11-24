@@ -31,8 +31,11 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
    `[patch.crates-io]` entry at the same rev, as Rune's README requires). *Rejected:* SwiftUI (not Rune),
    Tauri plus a web UI (heavier, and not what was asked).
 2. **One accessory app (no Dock icon) with a launcher panel summoned by a global shortcut**, default
-   `ctrl+alt+space` (configurable). `alt+space` is avoided because the Alfred launcher and ChatGPT already
-   claim it. Escape or losing focus hides the panel. Rune has no macOS status item yet, so v1 ships
+   `ctrl+shift+space` (configurable). `alt+space` is avoided because the Alfred launcher and ChatGPT already
+   claim it; `ctrl+alt+space`, the first default, turned out to be macOS's "Select next source in Input
+   menu", on whenever a Mac has two keyboard layouts, which takes the keystroke first (found on the owner's
+   Mac, 2026-11-24). Escape or losing focus hides the panel, but only once it has had focus: shown while
+   another app is in front (at launch), it would otherwise vanish before anyone saw it. Rune has no macOS status item yet, so v1 ships
    without a menu-bar icon. *Rejected:* a regular windowed app (an assistant should be one keystroke away);
    an always-on overlay (v2).
 3. **Two-tier brain: a deterministic intent router first, then the LLM agent with tools, then plain chat.**

@@ -13,7 +13,7 @@ Summon it, say or type what you need, and it opens your apps, saves notes, adds 
 
 ## What it does
 
-- **Summon it anywhere.** Press <kbd>⌃⌥Space</kbd> and the panel drops in at the top of the screen you're on. <kbd>esc</kbd> hides it.
+- **Summon it anywhere.** Press <kbd>⌃⇧Space</kbd> and the panel drops in at the top of the screen you're on. <kbd>esc</kbd> hides it.
 - **Talk or type.** Click the orb (or <kbd>⌘L</kbd>) and speak; Alfred stops listening when you do.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches Google, opens links, tells the time.
 - **It reads your mail and drafts replies.** "Read my last email", "reply to it saying I'll be there at 3": the reply opens in Mail for you to check and send. Alfred never sends mail.
@@ -163,7 +163,7 @@ voice = "bm_george"          # British male; try bf_emma, af_heart, am_michael
 speed = 1.05
 
 [ui]
-shortcut = "ctrl+alt+space"
+shortcut = "ctrl+shift+space"   # macOS keeps ⌃Space and ⌃⌥Space for switching keyboards
 hide_on_blur = true
 
 [search]

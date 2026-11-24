@@ -125,5 +125,6 @@ fn dictation_without_the_model_says_so() {
 #[test]
 fn shortcuts_print_as_mac_symbols() {
     assert_eq!(pretty_shortcut("ctrl+alt+space"), "⌃⌥Space");
+    assert_eq!(pretty_shortcut("ctrl+shift+space"), "⌃⇧Space");
     assert_eq!(pretty_shortcut("cmd+shift+k"), "⌘⇧K");
 }

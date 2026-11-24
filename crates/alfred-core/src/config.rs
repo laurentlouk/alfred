@@ -152,7 +152,7 @@ pub struct UiConfig {
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { shortcut: "ctrl+alt+space".into(), hide_on_blur: true }
+        Self { shortcut: "ctrl+shift+space".into(), hide_on_blur: true }
     }
 }
 
@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(c.llm.provider, Provider::Ollama);
         assert_eq!(c.llm.model, "qwen3:0.6b");
         assert_eq!(c.voice.voice, "bm_george");
-        assert_eq!(c.ui.shortcut, "ctrl+alt+space");
+        assert_eq!(c.ui.shortcut, "ctrl+shift+space");
         assert!(c.shortcuts.enabled && c.shortcuts.trusted.is_empty());
         assert_eq!(c.desktop.model, "qwen3:8b");
         assert_eq!(c.llm.with_model("qwen3:4b").base_url, c.llm.base_url);

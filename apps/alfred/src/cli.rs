@@ -14,7 +14,7 @@ use crate::speech::{self, Playback};
 const HELP: &str = "Alfred, a local assistant for your Mac.
 
 USAGE
-  alfred                      open Alfred (summon it any time with the shortcut, ctrl+alt+space by default)
+  alfred                      open Alfred (summon it any time with the shortcut, ctrl+shift+space by default)
   alfred ask [options] TEXT   do what TEXT asks and print the answer
       --dry-run                 show the actions instead of running them
       --yes                     answer yes when Alfred asks to confirm (including a Send it stopped before)

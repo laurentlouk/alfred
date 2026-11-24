@@ -78,6 +78,10 @@ pub struct Ui {
     pub voice_ready: bool,
     pub ears_ready: bool,
     pub shortcut: String,
+    /// The panel has had the keyboard since it was last shown. Only then does losing it hide the panel:
+    /// shown while another app is in front (at launch, from Finder), it never gets focus, and hiding on
+    /// that first blur would take it away before anyone saw it.
+    had_focus: bool,
     attempt: u64,
     listen: Option<Listen>,
     speech: Option<Speech>,
@@ -101,6 +105,7 @@ impl Ui {
             voice_ready: true,
             ears_ready: true,
             shortcut: Config::default().ui.shortcut,
+            had_focus: false,
             attempt: 0,
             listen: None,
             speech: None,
@@ -245,16 +250,30 @@ impl Ui {
     fn toggle_visible(&mut self) {
         let Some(l) = &self.links else { return };
         if l.me.is_visible() {
-            l.me.hide();
+            self.hide_panel();
         } else {
+            self.had_focus = false;
             summon(&l.me);
         }
     }
 
-    fn on_focus(&mut self, focused: bool, tx: &mut Tx) {
+    fn on_focus(&mut self, focused: bool) {
+        if focused {
+            self.had_focus = true;
+            return;
+        }
         let hide = self.config().is_some_and(|c| c.ui.hide_on_blur);
-        if !focused && hide && self.mode != Mode::Listening {
-            tx.close_window();
+        if self.had_focus && hide && self.mode != Mode::Listening {
+            self.hide_panel();
+        }
+    }
+
+    /// Put the panel away, keeping its window and the conversation. (Closing the window would end the
+    /// app's run in Rune, and the shortcut with it: the panel could never come back.)
+    fn hide_panel(&mut self) {
+        self.had_focus = false;
+        if let Some(l) = &self.links {
+            l.me.hide();
         }
     }
 
@@ -333,14 +352,14 @@ impl Ui {
     }
 }
 
-/// Bring the panel up near the top of the screen the pointer is on.
+/// Bring the panel up near the top of the screen the pointer is on, in front and taking the keyboard
+/// (`open` also creates the window the first time).
 fn summon(me: &AppHandle<Ui>) {
     me.place(
         DisplayTarget::UnderPointer,
         OverlayPlacement::Edge { edge: ScreenEdge::Top, margin: 110.0, align: Align::Center, inset: 0.0 },
     );
-    me.show();
-    me.focus();
+    me.open();
 }
 
 /// Each frame: follow the microphone or the speech envelope, and end dictation on silence.
@@ -384,7 +403,7 @@ fn on_key(s: &mut Ui, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 Mode::Speaking => s.stop_speaking(),
                 Mode::Listening => s.cancel_listening(),
                 _ if s.pending.is_some() => s.confirm(false),
-                _ => tx.close_window(),
+                _ => s.hide_panel(),
             }
             true
         }
@@ -430,10 +449,12 @@ pub fn run(args: Vec<String>) {
     let me = app.handle();
     let links = workers::spawn(config.clone(), me.clone());
     let shortcut = config.ui.shortcut.clone();
+    // keep_running: if the window is ever closed (rather than hidden), the app and its shortcut stay.
     let app = app
         .init(move || Ui::live(links))
+        .keep_running()
         .global_shortcut(&shortcut, |s, _| s.toggle_visible())
-        .on_focus(|s, focused, tx| s.on_focus(focused, tx));
+        .on_focus(|s, focused, _| s.on_focus(focused));
     if !args.iter().any(|a| a == "--background") {
         let first = me.clone();
         std::thread::spawn(move || {
