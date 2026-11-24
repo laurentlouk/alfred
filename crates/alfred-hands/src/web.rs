@@ -538,7 +538,7 @@ impl BrowserHands {
     /// search the site, scroll) until the answer is found or the steps run out.
     fn look_further(&self, query: &str) -> Option<String> {
         let task = format!(
-            "Find the answer to this question: {query}. When you have it, finish with done and put the answer, saying which site it comes from, in note."
+            "{LOOKING_FURTHER}{query}. When you have it, finish with done and put the answer, saying which site it comes from, in note."
         );
         let mut answer = None;
         self.work(&task, vec![format!("read the search results and the top pages for \"{}\"", clip(query, 60))], &mut answer).ok()?;
@@ -680,7 +680,11 @@ impl BrowserHands {
         match model.chat_json(&messages, &answer_schema()) {
             Ok(v) => {
                 let answer = v["answer"].as_str().unwrap_or("").trim().to_string();
-                if v["found"].as_bool() == Some(true) && !answer.is_empty() { Judged::Found(clip(&answer, 400)) } else { Judged::NotFound }
+                if v["found"].as_bool() == Some(true) && crate::is_an_answer(&answer) {
+                    Judged::Found(clip(&answer, 400))
+                } else {
+                    Judged::NotFound
+                }
             }
             Err(_) => Judged::NoModel,
         }
@@ -739,6 +743,14 @@ impl BrowserHands {
     /// Work towards `task` on the page now open, one observed step at a time. `history` says what was done
     /// so far; `answer` gets the run's closing note when it ends with `done`.
     fn work(&self, task: &str, mut history: Vec<String>, answer: &mut Option<String>) -> Result<Outcome, String> {
+        // Asked to be told something about the page, the page often says it already: one look answers it,
+        // without a plan or a single click.
+        if crate::asks_for_information(task)
+            && !task.starts_with(LOOKING_FURTHER)
+            && let Some(found) = self.read_what_is_there(task, &history, answer)
+        {
+            return Ok(found);
+        }
         let mut circling = Circling::default();
         let mut plan: Option<Vec<String>> = None;
         // The role of the field the previous action filled: Enter is pressed only right after a search box.
@@ -930,6 +942,9 @@ impl BrowserHands {
         Ok(())
     }
 }
+
+/// How a search that the results didn't answer goes on: its page was just read, so no first look.
+const LOOKING_FURTHER: &str = "Find the answer to this question: ";
 
 /// The label of Alfred's tab in the user's own Chrome.
 const ALFRED_TAB: &str = "alfred";

@@ -14,6 +14,9 @@
 //! Real apps are big (Mail's window holds hundreds of elements), so the character budget is shared
 //! fairly: at every level each branch gets an equal part of what is left, and a small branch gives what it
 //! doesn't use to the others. A long sidebar can't crowd out the message list beside it.
+//!
+//! Apps share patterns: a chat has a message box to type in, a search field and a send button. These are
+//! named first, under `KEY PLACES`, so the model goes straight to them instead of searching the tree.
 
 use std::collections::HashMap;
 
@@ -57,8 +60,8 @@ pub fn compact(data: &Value, limit: usize) -> View {
     let mut view = View::default();
     let mut lines = Vec::new();
     let mut budget = limit;
-    if let Some(title) = data["window"]["title"].as_str().filter(|t| !t.is_empty()) {
-        let line = format!("window \"{}\"", clip(title));
+    if let Some(title) = data["window"]["title"].as_str().map(plain).filter(|t| !t.is_empty()) {
+        let line = format!("window \"{}\"", clip(&title));
         budget = budget.saturating_sub(line.len() + 1);
         lines.push(line);
     }
@@ -68,20 +71,89 @@ pub fn compact(data: &Value, limit: usize) -> View {
     if view.truncated {
         lines.push("… (more elements not shown)".into());
     }
-    view.text = lines.join("\n");
+    let places = key_places(&view.refs);
+    view.text = if places.is_empty() { lines.join("\n") } else { format!("KEY PLACES:\n{}\n\n{}", places.join("\n"), lines.join("\n")) };
     view
+}
+
+/// Roles a user types into.
+const EDITABLE: &[&str] = &["textfield", "textarea", "searchfield", "textview", "combobox"];
+/// Words in a search field's name or placeholder.
+const SEARCH_WORDS: &[&str] = &["search", "rechercher", "recherche", "find", "filter", "filtrer", "buscar", "suche", "cerca"];
+/// Words in a message box's name or placeholder ("Type a message", "Saisissez un message", "Reply…").
+const MESSAGE_WORDS: &[&str] = &[
+    "message",
+    "messages",
+    "type",
+    "write",
+    "reply",
+    "compose",
+    "chat",
+    "saisissez",
+    "saisir",
+    "ecrire",
+    "ecrivez",
+    "tapez",
+    "repondre",
+    "escribe",
+    "mensaje",
+    "nachricht",
+    "scrivi",
+    "messaggio",
+];
+/// Words naming a send button.
+const SEND_WORDS: &[&str] = &["send", "envoyer", "enviar", "senden", "invia"];
+
+/// The places every chat-like window has, found among the elements shown: the message box, the search
+/// field and the send button. A window with one field besides search has it as its message box; a form
+/// with several fields gets no guess.
+fn key_places(refs: &HashMap<String, Element>) -> Vec<String> {
+    let mut shown: Vec<(&String, &Element)> = refs.iter().collect();
+    shown.sort_by_key(|(r, _)| (r.chars().next(), r[1..].parse::<u64>().unwrap_or(u64::MAX)));
+    let words = |e: &Element| -> Vec<String> { alfred_core::catalog::fold(&e.name).split_whitespace().map(str::to_string).collect() };
+    let says = |e: &Element, list: &[&str]| words(e).iter().any(|w| list.contains(&w.as_str()));
+    let role = |e: &Element| e.role.to_lowercase();
+    let editable: Vec<&(&String, &Element)> = shown.iter().filter(|(_, e)| EDITABLE.contains(&role(e).as_str())).collect();
+    let search = editable.iter().find(|(_, e)| role(e) == "searchfield" || says(e, SEARCH_WORDS)).map(|p| **p);
+    let others: Vec<&&(&String, &Element)> = editable.iter().filter(|p| search.is_none_or(|s| s.0 != p.0)).collect();
+    let message = others.iter().find(|(_, e)| says(e, MESSAGE_WORDS)).map(|p| ***p).or_else(|| (others.len() == 1).then(|| **others[0]));
+    let send = shown.iter().find(|(_, e)| role(e) == "button" && says(e, SEND_WORDS)).copied();
+    let line = |label: &str, (r, e): (&String, &Element), note: &str| {
+        let name = if e.name.is_empty() { String::new() } else { format!(" \"{}\"", clip(&e.name)) };
+        format!(" {label}: {r} {}{name}{note}", e.role)
+    };
+    let mut out = Vec::new();
+    out.extend(message.map(|m| line("message box", m, " (to write, type into it)")));
+    out.extend(search.map(|s| line("search", s, "")));
+    out.extend(send.map(|s| line("send button", s, " (it sends; Alfred asks the user first)")));
+    out
+}
+
+/// Text without the invisible marks some apps put around names (WhatsApp's left-to-right marks), which
+/// would hide a name from matching and from the model.
+fn plain(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}'))
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn build(node: &Value, depth: usize, ancestors: &[String], prefix: &str) -> Rendered {
     let role = node["role"].as_str().unwrap_or("element");
     // An unnamed row borrows the name of its first named actionable child (a message row, its sender's
     // cell), so the row's line says what it is and carries its [selected] state where the model looks.
-    let name = match node["name"].as_str().map(str::trim).filter(|n| !n.is_empty()) {
-        Some(n) => n,
-        None if node["ref_id"].is_string() => borrowed_name(node),
-        None => "",
+    let own = node["name"].as_str().map(plain).unwrap_or_default();
+    let name_owned = if !own.is_empty() {
+        own
+    } else if node["ref_id"].is_string() {
+        plain(borrowed_name(node))
+    } else {
+        String::new()
     };
-    let value = node["value"].as_str().map(str::trim).unwrap_or("");
+    let name = name_owned.as_str();
+    let value_owned = node["value"].as_str().map(plain).unwrap_or_default();
+    let value = value_owned.as_str();
     let indent = " ".repeat(depth.min(MAX_DEPTH_INDENT));
     let parent = ancestors.last().map(|a| bare(a)).unwrap_or("");
     let mut line = None;

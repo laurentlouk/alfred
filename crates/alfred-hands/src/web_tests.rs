@@ -934,9 +934,10 @@ fn in_the_users_chrome_a_site_they_ask_for_opens_in_alfreds_tab_and_is_remembere
 fn a_task_on_the_users_page_happens_in_their_tab_and_so_does_the_confirmed_click() {
     let web = in_chrome();
     web.0.state.lock().unwrap().user_tab = Some(("T-user".into(), RESULTS.into()));
-    let (h, _) = hands(&web, vec![step("done", json!({"note": "The first result is Simula."}))], 10);
+    // One look at their page answers it.
+    let (h, _) = answering(&web, vec![found("The first result is Simula, according to en.wikipedia.org.")]);
     let o = h.browse_theirs("what is the first result", RESULTS).unwrap();
-    assert_eq!(o.summary, "The first result is Simula.");
+    assert_eq!(o.summary, "The first result is Simula, according to en.wikipedia.org.");
     assert!(web.log().contains(&args(["tab", "T-user"])), "switched to the user's tab by its id");
     assert!(!web.ran("open") && !web.log().iter().any(|c| c.len() > 1 && c[1] == "new"), "no new tab, no navigation");
     assert_eq!(h.page(), None, "the user's page isn't taken for Alfred's");
@@ -948,24 +949,21 @@ fn a_task_on_the_users_page_happens_in_their_tab_and_so_does_the_confirmed_click
 #[test]
 fn without_their_chrome_alfred_opens_the_users_page_in_its_own_window() {
     let web = Shared::default();
-    let (h, _) = hands(&web, vec![step("done", json!({"note": "It's the Wikipedia main page."}))], 10);
+    let (h, _) = answering(&web, vec![found("It's the Wikipedia main page, according to en.wikipedia.org.")]);
     let o = h.browse_theirs("what is this page", MAIN).unwrap();
-    assert!(
-        o.summary.starts_with("It's the Wikipedia main page. In the browser I opened en.wikipedia.org, the page you're on"),
-        "{}",
-        o.summary
-    );
+    assert!(o.summary.starts_with("It's the Wikipedia main page, according to en.wikipedia.org."), "{}", o.summary);
+    assert!(o.summary.contains("I opened en.wikipedia.org, the page you're on"), "{}", o.summary);
     assert!(web.log().contains(&args(["open", MAIN])));
 }
 
 #[test]
 fn when_the_user_is_looking_at_alfreds_tab_the_work_happens_there() {
     let web = in_chrome();
-    let (h, _) = hands(&web, vec![step("done", json!({"note": "It's the Wikipedia main page."}))], 10);
+    let (h, _) = answering(&web, vec![found("It's the Wikipedia main page, according to en.wikipedia.org.")]);
     h.show(MAIN).unwrap();
     // The user switches to Alfred's tab and asks about "this page".
     let o = h.browse_theirs("what is this page", MAIN).unwrap();
-    assert_eq!(o.summary, "It's the Wikipedia main page.");
+    assert_eq!(o.summary, "It's the Wikipedia main page, according to en.wikipedia.org.");
     assert!(web.log().iter().filter(|c| c[..] == args(["tab", "alfred"])[..]).count() >= 2, "worked in Alfred's own tab");
     assert_eq!(h.page().as_deref(), Some(MAIN), "still Alfred's tab, so it's still remembered");
 }
@@ -987,4 +985,28 @@ fn a_run_that_stops_short_reads_the_page_it_reached_before_giving_up() {
     );
     let read = model.seen.lock().unwrap().last().unwrap()[1].content.clone();
     assert!(read.contains("12°C, nuageux"), "the page it reached was read: {read}");
+}
+
+#[test]
+fn a_question_about_the_open_page_takes_one_look() {
+    let web = Shared::default();
+    {
+        let mut s = web.0.state.lock().unwrap();
+        s.page = "google-links".into();
+        s.url = "https://www.google.com/search?q=weather+in+Paris".into();
+    }
+    let model = std::sync::Arc::new(Scripted::new([found("The first result is Météo-France's Paris forecast.")]));
+    let h = BrowserHands::new(Box::new(web.clone()), Box::new(model.clone()), 10);
+    let o = h.browse("what is the first result on this page?", None).unwrap();
+    assert!(o.summary.starts_with("The first result is Météo-France's Paris forecast."), "{}", o.summary);
+    assert_eq!(model.seen.lock().unwrap().len(), 1, "one look, no plan, no steps");
+    assert!(!web.ran("click"));
+}
+
+#[test]
+fn a_task_on_a_page_still_plans_and_acts() {
+    let web = Shared::default();
+    let (h, model) = hands(&web, vec![step("done", json!({"note": "Opened it."}))], 10);
+    h.browse("open the first result", Some(MAIN)).unwrap();
+    assert!(model.schemas.lock().unwrap()[0]["properties"].get("steps").is_some(), "the first call is the plan");
 }

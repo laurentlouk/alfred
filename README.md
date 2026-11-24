@@ -169,7 +169,7 @@ Ollama's Apple-silicon builds of Gemma can't do structured output; Alfred notice
 brew install agent-desktop
 ```
 
-Alfred then asks for Accessibility and opens System Settings at Privacy & Security → Accessibility: turn on Alfred (or your terminal, for the command line). Alfred looks at the app's window, picks one step, acts, and looks again, at most 8 steps. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:8b` by default):
+Alfred then asks for Accessibility and opens System Settings at Privacy & Security → Accessibility: turn on Alfred (or your terminal, for the command line). When you ask to be told something ("read my latest WhatsApp message", "how many conversations are there?"), Alfred first reads the window as it is and answers in one look, a few seconds, when it already shows the answer. Otherwise it looks at the window, picks one step, acts, and looks again, at most 8 steps. It names the places most apps share (a chat's message box, its search field, its send button) for the model, so it goes straight to them. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:8b` by default):
 
 ```bash
 ollama pull qwen3:8b

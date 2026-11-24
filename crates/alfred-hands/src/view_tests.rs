@@ -147,3 +147,56 @@ fn rows_stay_whole_and_the_first_ones_come_first() {
     assert!(v.text.contains("Subject number 0 about something") && v.text.contains("Subject number 3 about something"), "{}", v.text);
     assert!(!v.text.contains("Sender 29"), "later rows are cut, not shredded");
 }
+
+/// A chat app's window, shaped like WhatsApp's: a search field, the chats, the open conversation, and a
+/// message box. Its names carry invisible left-to-right marks, as WhatsApp's do.
+fn chat_window() -> Value {
+    json!({
+        "window": {"title": "\u{200e}WhatsApp"},
+        "tree": {"role": "window", "children": [
+            {"role": "group", "children": [
+                {"ref_id": "@s1:e3", "role": "textfield", "name": "\u{200e}Rechercher"},
+                {"ref_id": "@s1:e10", "role": "button", "name": "Ada Lovelace, See you at 6, 14:02"},
+                {"ref_id": "@s1:e11", "role": "button", "name": "Charles Babbage, The engine works, 13:40"}
+            ]},
+            {"role": "group", "children": [
+                {"role": "heading", "name": "Ada Lovelace"},
+                {"role": "statictext", "value": "See you at 6"},
+                {"ref_id": "@s1:e45", "role": "textfield", "name": "\u{200e}Saisissez un message"},
+                {"ref_id": "@s1:e46", "role": "button", "name": "Envoyer"}
+            ]}
+        ]}
+    })
+}
+
+#[test]
+fn a_chat_window_names_its_message_box_search_and_send_button() {
+    let v = compact(&chat_window(), 4000);
+    let head: Vec<&str> = v.text.lines().take(4).collect();
+    assert_eq!(head[0], "KEY PLACES:", "{}", v.text);
+    assert!(head.contains(&" message box: e45 textfield \"Saisissez un message\" (to write, type into it)"), "{}", v.text);
+    assert!(head.contains(&" search: e3 textfield \"Rechercher\""), "{}", v.text);
+    assert!(head.contains(&" send button: e46 button \"Envoyer\" (it sends; Alfred asks the user first)"), "{}", v.text);
+    assert!(!v.text.contains('\u{200e}'), "invisible marks are gone");
+    assert_eq!(v.refs["e45"].name, "Saisissez un message");
+}
+
+#[test]
+fn the_only_field_besides_search_is_the_message_box_and_forms_get_no_guess() {
+    let mut w = chat_window();
+    w["tree"]["children"][1]["children"][2]["name"] = json!("");
+    assert!(compact(&w, 4000).text.contains(" message box: e45 textfield (to write, type into it)"));
+    // A mail window with several fields: none is guessed to be a message box.
+    let form = json!({"tree": {"role": "window", "children": [
+        {"ref_id": "@s1:e1", "role": "textfield", "name": "To"},
+        {"ref_id": "@s1:e2", "role": "textfield", "name": "Subject"},
+        {"ref_id": "@s1:e3", "role": "textarea", "name": ""}
+    ]}});
+    assert!(!compact(&form, 4000).text.contains("message box"));
+}
+
+#[test]
+fn a_window_without_key_places_has_no_header() {
+    let plain = json!({"tree": {"role": "window", "children": [{"ref_id": "@s1:e1", "role": "button", "name": "OK"}]}});
+    assert!(!compact(&plain, 4000).text.contains("KEY PLACES"));
+}

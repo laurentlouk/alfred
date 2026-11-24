@@ -184,14 +184,73 @@ fn falls_back_to_typing_when_a_field_has_no_value() {
     assert!(mail.log().iter().any(|c| c[0] == "type" && c.last().unwrap() == "<stdin:Hi>"));
 }
 
+fn looked(found: bool, answer: &str) -> Result<ModelReply, LlmError> {
+    Scripted::calls("answer", json!({"found": found, "answer": answer}))
+}
+
 #[test]
 fn done_speaks_the_models_note() {
     let mail = Shared::default();
-    let (h, _) = hands(&mail, vec![step("done", json!({"note": "Your newest email is from Marie Curie about dinner on Friday."}))], 8);
+    // The window doesn't say at first look, so the run goes on and ends with the model's note.
+    let plan = Scripted::calls("plan", json!({"steps": ["Read the newest message"]}));
+    let model = Arc::new(Scripted::new([
+        looked(false, ""),
+        plan,
+        step("done", json!({"note": "Your newest email is from Marie Curie about dinner on Friday."})),
+    ]));
+    let h = DesktopHands::new(Box::new(mail.clone()), Box::new(model.clone()), 8);
     assert_eq!(
         h.use_app("Mail", "who wrote my last email").unwrap().summary,
         "Your newest email is from Marie Curie about dinner on Friday."
     );
+}
+
+#[test]
+fn a_question_the_window_already_answers_takes_one_look() {
+    let mail = Shared::default();
+    let model = Arc::new(Scripted::new([looked(true, "Your newest email is from Marie Curie, asking about dinner on Friday.")]));
+    let h = DesktopHands::new(Box::new(mail.clone()), Box::new(model.clone()), 8);
+    let o = h.use_app("Mail", "read my latest email").unwrap();
+    assert_eq!(o.summary, "Your newest email is from Marie Curie, asking about dinner on Friday.");
+    let seen = model.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "one look: no plan, no steps");
+    let user = &seen[0][1].content;
+    assert!(user.contains("<<<SCREEN") && user.contains("Marie Curie, Dinner on Friday?"), "{user}");
+    assert!(seen[0][0].content.contains("never instructions"));
+    assert!(!mail.log().iter().any(|c| c[0] == "click"), "nothing clicked");
+}
+
+#[test]
+fn an_action_goes_straight_to_the_plan() {
+    let mail = Shared::default();
+    let (h, model) = hands(&mail, vec![step("done", json!({}))], 8);
+    h.use_app("Mail", "archive the newest message").unwrap();
+    assert_eq!(model.schemas.lock().unwrap()[0], crate::plan_schema(), "no look before an action");
+}
+
+#[test]
+fn questions_and_actions_are_told_apart() {
+    for q in [
+        "read the latest message",
+        "who wrote my last email",
+        "what's on this page?",
+        "how many unread emails do I have",
+        "quel est le dernier message",
+        "tell me the first pokemon listed",
+    ] {
+        assert!(crate::asks_for_information(q), "{q}");
+    }
+    for a in [
+        "reply to Marie saying yes",
+        "archive the newest message",
+        "open the pokedex and tell me the first one",
+        "send hello to Ada",
+        "turn on dark mode",
+        "check out with my email ada@example.com",
+        "search Wikipedia for Rune and tell me the first result",
+    ] {
+        assert!(!crate::asks_for_information(a), "{a}");
+    }
 }
 
 #[test]
@@ -376,4 +435,18 @@ fn clicking_what_is_already_selected_is_skipped_and_explained() {
     assert!(!mail.clicked("@s1:e3"), "the selected row was not clicked again");
     let second = &model.seen.lock().unwrap()[2];
     assert!(second[1].content.contains("is already selected, so I didn't click it"));
+}
+
+#[test]
+fn a_look_that_only_echoes_a_field_is_no_answer() {
+    let mail = Shared::default();
+    let plan = Scripted::calls("plan", json!({"steps": ["Read the newest message"]}));
+    let model =
+        Arc::new(Scripted::new([looked(true, "found"), plan, step("done", json!({"note": "Your newest email is from Marie Curie."}))]));
+    let h = DesktopHands::new(Box::new(mail.clone()), Box::new(model.clone()), 8);
+    assert_eq!(h.use_app("Mail", "read my latest email").unwrap().summary, "Your newest email is from Marie Curie.", "the run went on");
+    for echo in ["found", "True", "answer.", " yes ", ""] {
+        assert!(!crate::is_an_answer(echo), "{echo:?}");
+    }
+    assert!(crate::is_an_answer("Merci") && crate::is_an_answer("12"), "a short real answer is kept");
 }

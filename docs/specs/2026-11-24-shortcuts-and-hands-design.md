@@ -76,6 +76,18 @@ home devices, Slack. Two complementary bridges do that:
     switched on for the user. `scripts/bundle-macos.sh` signs with the Mac's Apple Development identity
     (or `ALFRED_SIGN`): an ad hoc signature changes with every build, and macOS forgot the grant at each
     reinstall, which is what the owner ran into.
+10a. **Read first, and name the common places (added 2026-11-24, at the owner's request: reading the
+    latest WhatsApp message took minutes).** A task that asks to be told something (read, who, what, how
+    many, latest, quel, dernier…, and no action word such as reply, send, search, open or check) first gets
+    one look: the window as it is, the question, and a `{found, answer}` schema. When the window answers
+    it, that is the reply, with no plan and no click; otherwise the loop runs as before. The same first look
+    applies to a question about an open web page. A look whose answer only echoes a field ("found", "true")
+    counts as not found: `qwen3:8b` once answered "found". The compacted view also starts with `KEY PLACES`:
+    the message box (a field named like "Type a message", "Saisissez un message", or the one field besides
+    search), the search field and the send button, found by role and name in several languages; the step
+    and plan prompts point at them. Names lose the invisible marks some apps add (WhatsApp writes U+200E
+    before its own name and its fields'). Measured live: "read my latest message on WhatsApp" answered in
+    one look, 5.5 s from the command line; "how many conversations are listed?" answered "14".
 11. **Pending actions come from executors too.** `Outcome` gains an optional follow-up action. The agent
     turns it into the pending confirmation exactly like a risky router action, so the UI's Yes/No card and
     the CLI's prompt need no new code path.
