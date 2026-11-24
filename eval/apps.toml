@@ -62,7 +62,7 @@ expect = { text = "late" }
 
 [[case]]
 text = "in Slack, post hi in the general channel"
-tool = "use_app"
+tool = "send_message"
 expect = { app = "slack" }
 
 [[case]]
@@ -72,8 +72,8 @@ expect = { app = "mail" }
 
 [[case]]
 text = "in WhatsApp, tell Marie I'm on my way"
-tool = "use_app"
-expect = { app = "whatsapp" }
+tool = "send_message"
+expect = { app = "whatsapp", to = "marie" }
 
 # --- tasks on websites: the browser, with an address only when the user said one ----------------------
 [[case]]

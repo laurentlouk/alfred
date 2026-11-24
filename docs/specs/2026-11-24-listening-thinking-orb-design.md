@@ -95,7 +95,11 @@ Alfred v1 worked, but daily use showed five gaps the owner asked to close:
     So on a Mac with room for both, `gemma4:26b` decides and `gemma4:e4b` thinks: together they got all
     11 hard questions right at 6.4 s each (median), with quick answers at 0.5 s. The default stays
     `qwen3:0.6b`, which runs on any Apple-silicon Mac. *Rejected:* `26b` for both (a minute per hard
-    question), `e4b` for both (it misses a quarter of the loose app requests).
+    question), `e4b` for both (it misses a quarter of the loose app requests), and `qwen3.5:35b`
+    (35B-A3B, tried later the same day): 94% of requests, 90% of app requests against 95% for `26b` on the
+    same fixture, quick answers just as fast (0.6 to 0.8 s), and 11 of 11 hard questions but 34 s each.
+    Ollama serves its default tag on Apple silicon as NVFP4/MLX, without structured output, so it can't
+    drive apps either; the GGUF tags (`qwen3.5:9b-q4_K_M`, `qwen3.5:35b-a3b-q4_K_M`) can.
 11. **Models without structured output fall back to native tool calls.** Ollama's Apple-silicon Gemma
     builds (NVFP4 and MLX) answer a `format` schema with 501. The agent switches to native tool calls for
     the session, parses Gemma's own call syntax when it arrives as text, and nudges once when a reply
