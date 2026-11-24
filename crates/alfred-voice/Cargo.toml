@@ -1,0 +1,15 @@
+[package]
+name = "alfred-voice"
+description = "Alfred's on-device voice: Kokoro-82M speech (misaki-rs phonemes) and Moonshine dictation via sherpa-onnx."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+misaki-rs.workspace = true
+sherpa-onnx.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

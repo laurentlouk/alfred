@@ -1,0 +1,7 @@
+target/
+*.part
+.DS_Store
+/dist/
+
+# grimoire harness: run journals, code graph, manager briefings
+.grimoire/

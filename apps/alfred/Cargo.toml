@@ -1,0 +1,22 @@
+[package]
+name = "alfred"
+description = "Alfred: a local, voice-first assistant for the Mac, built with Rune."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "alfred"
+
+[[bin]]
+name = "alfred"
+path = "src/main.rs"
+
+[dependencies]
+alfred-core.workspace = true
+alfred-mac.workspace = true
+alfred-voice.workspace = true
+rune.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/alfred-core", "crates/alfred-mac", "crates/alfred-voice", "apps/alfred"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/laurentlouk/alfred"
+rust-version = "1.99"
+
+[workspace.dependencies]
+alfred-core = { path = "crates/alfred-core" }
+alfred-mac = { path = "crates/alfred-mac" }
+alfred-voice = { path = "crates/alfred-voice" }
+misaki-rs = { version = "0.11.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sherpa-onnx = "2.0.3"
+toml = "0.9"
+ureq = { version = "3", features = ["json"] }
+# Rune is pre-release: pin a dev revision and patch every crate its root Cargo.toml patches, at the same rev.
+rune = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d", features = ["tooling"] }
+
+[patch.crates-io]
+winit = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"

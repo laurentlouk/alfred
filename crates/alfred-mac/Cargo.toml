@@ -1,0 +1,13 @@
+[package]
+name = "alfred-mac"
+description = "Alfred's macOS actions: open apps and links, Notes, Reminders, through argv-safe AppleScript."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+alfred-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,98 @@
+{
+  "$comment": "grimoire.config.json: the harness configuration, read by /orchestrate, /grimoire:logs, /grimoire:manager and the guard hook.",
+  "baseBranch": "origin/main",
+  "memoryDir": "memory",
+  "runsDir": "runs",
+  "requireHook": {
+    "name": "rtk hook claude",
+    "check": "command -v rtk && rtk hook check \"git status\" | grep -q '^rtk '",
+    "fix": "brew install rtk-ai/tap/rtk && rtk init -g, then restart the session",
+    "raw": "rtk proxy"
+  },
+  "preflight": true,
+  "maxCost": 30000000,
+  "policy": "balanced",
+  "telemetry": {
+    "enabled": true,
+    "dir": ".grimoire/runs",
+    "retentionDays": 183
+  },
+  "toolHints": {
+    "tracker": "gh CLI, authenticated (GitHub Issues on laurentlouk/alfred)"
+  },
+  "graph": {
+    "enabled": true,
+    "dir": ".grimoire/graph",
+    "exclude": [
+      "target/**",
+      "dist/**",
+      "docs/images/**",
+      "assets/**"
+    ],
+    "maxFileKB": 512
+  },
+  "manager": {
+    "sources": [
+      {
+        "id": "prs",
+        "category": "prs",
+        "kind": "github",
+        "hint": "gh CLI, authenticated",
+        "readOnly": "guard",
+        "scope": {
+          "repos": [
+            "laurentlouk/alfred"
+          ]
+        },
+        "verifiedAt": "2026-11-24T01:56:46Z"
+      },
+      {
+        "id": "runs",
+        "category": "runs",
+        "kind": "grimoire"
+      }
+    ],
+    "urgent": {
+      "priorityAtMost": 2,
+      "dueWithinDays": 2,
+      "blocksAtLeast": 2,
+      "stalledDays": 5
+    },
+    "priorityLabels": {
+      "priority: urgent": 1,
+      "priority: high": 2,
+      "priority: medium": 3,
+      "priority: low": 4,
+      "P0": 1,
+      "P1": 2,
+      "P2": 3,
+      "P3": 4,
+      "critical": 1
+    },
+    "maxItemsPerSource": 200,
+    "share": null,
+    "budgetUsd": null
+  },
+  "repos": [
+    {
+      "name": "alfred",
+      "path": ".",
+      "remote": "git@github.com:laurentlouk/alfred.git",
+      "agent": "alfred-engineer",
+      "tags": [
+        "rust",
+        "macos",
+        "ui",
+        "voice"
+      ],
+      "gate": null,
+      "check": "cargo test --workspace",
+      "strictPaths": [
+        "crates/alfred-mac/**",
+        "crates/alfred-core/src/tools.rs",
+        "crates/alfred-core/src/agent.rs",
+        "crates/alfred-core/src/router.rs"
+      ]
+    }
+  ]
+}

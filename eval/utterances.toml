@@ -1,0 +1,194 @@
+# Requests Alfred should handle, for `alfred eval` (and a test that checks the router's share).
+# `tool` is the first tool expected, "ask" for a follow-up question, or "chat" for an answer in words.
+# `expect` maps an action field to text it must contain (case-insensitive).
+
+# --- router-shaped: everyday phrasings ---------------------------------------------------------------
+[[case]]
+text = "open notes"
+tool = "open_app"
+expect = { name = "notes" }
+
+[[case]]
+text = "Hey Alfred, could you open Safari please?"
+tool = "open_app"
+expect = { name = "safari" }
+
+[[case]]
+text = "launch spotify"
+tool = "open_app"
+expect = { name = "spotify" }
+
+[[case]]
+text = "open youtube"
+tool = "open_url"
+expect = { url = "youtube.com" }
+
+[[case]]
+text = "go to github.com"
+tool = "open_url"
+expect = { url = "github.com" }
+
+[[case]]
+text = "quit music"
+tool = "quit_app"
+expect = { name = "music" }
+
+[[case]]
+text = "take a note: buy oat milk"
+tool = "create_note"
+expect = { body = "oat milk" }
+
+[[case]]
+text = "open Notes and save that the boiler service is on Friday"
+tool = "create_note"
+expect = { body = "boiler service" }
+
+[[case]]
+text = "open Notes and save something for me"
+tool = "ask"
+
+[[case]]
+text = "save a note that I need to buy milk tomorrow"
+tool = "create_note"
+expect = { body = "buy milk" }
+
+[[case]]
+text = "remember that the spare key is under the blue pot"
+tool = "create_note"
+expect = { body = "spare key" }
+
+[[case]]
+text = "create a note called Gift ideas with a fountain pen for dad"
+tool = "create_note"
+expect = { title = "gift ideas", body = "fountain pen" }
+
+[[case]]
+text = "remind me to call the dentist"
+tool = "create_reminder"
+expect = { title = "dentist" }
+
+[[case]]
+text = "remind me in 20 minutes to take the pizza out"
+tool = "create_reminder"
+expect = { title = "pizza", minutes = "20" }
+
+[[case]]
+text = "set a reminder to stretch in an hour"
+tool = "create_reminder"
+expect = { minutes = "60" }
+
+[[case]]
+text = "search google for the rune ui framework"
+tool = "web_search"
+expect = { query = "rune ui framework" }
+
+[[case]]
+text = "google kokoro text to speech"
+tool = "web_search"
+expect = { query = "kokoro" }
+
+[[case]]
+text = "look up the weather in Lisbon"
+tool = "web_search"
+expect = { query = "weather in lisbon" }
+
+[[case]]
+text = "open safari and search for train times to Bath"
+tool = "web_search"
+expect = { query = "train times", browser = "safari" }
+
+[[case]]
+text = "what time is it?"
+tool = "get_time"
+
+[[case]]
+text = "what's the date"
+tool = "get_time"
+
+[[case]]
+text = "take a note"
+tool = "ask"
+
+# --- model-shaped: looser phrasings the router leaves alone -----------------------------------------
+[[case]]
+text = "could you jot it down that the plumber comes at 3"
+tool = "create_note"
+expect = { body = "plumber" }
+
+[[case]]
+text = "I need to remember to water the plants, put it in my reminders"
+tool = "create_reminder"
+expect = { title = "plants" }
+
+[[case]]
+text = "I'd like to listen to some music"
+tool = "open_app"
+expect = { name = "music" }
+
+[[case]]
+text = "find me some reviews of the new MacBook Air"
+tool = "web_search"
+expect = { query = "macbook" }
+
+[[case]]
+text = "show me the Wikipedia page about Alfred Hitchcock"
+tool = "open_url"
+expect = { url = "wikipedia" }
+
+[[case]]
+text = "bring my calendar up on screen"
+tool = "open_app"
+expect = { name = "calendar" }
+
+[[case]]
+text = "can you check online what the population of Japan is"
+tool = "web_search"
+expect = { query = "japan" }
+
+[[case]]
+text = "write down that the meeting moved to Thursday at 10"
+tool = "create_note"
+expect = { body = "thursday" }
+
+[[case]]
+text = "I want to send an email, get the mail app going"
+tool = "open_app"
+expect = { name = "mail" }
+
+[[case]]
+text = "what day of the week is it today"
+tool = "get_time"
+
+[[case]]
+text = "I keep forgetting to drink water, nudge me in 45 minutes"
+tool = "create_reminder"
+expect = { minutes = "45" }
+
+[[case]]
+text = "pull up the terminal"
+tool = "open_app"
+expect = { name = "terminal" }
+
+[[case]]
+text = "hello Alfred"
+tool = "chat"
+
+[[case]]
+text = "how are you today?"
+tool = "chat"
+
+[[case]]
+text = "thank you, that's all"
+tool = "chat"
+
+[[case]]
+text = "who are you?"
+tool = "chat"
+
+[[case]]
+text = "tell me a short joke"
+tool = "chat"
+
+[[case]]
+text = "what can you do?"
+tool = "chat"
