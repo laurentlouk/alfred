@@ -1,0 +1,85 @@
+# Requests that reach other apps: the user's Shortcuts and on-screen hands. The catalog below stands in
+# for the shortcuts a user might have, so the score is the same on every Mac.
+#   alfred eval --model eval/apps.toml
+
+[catalog]
+shortcuts = ["Lights Off", "Good Morning", "Start Vacuum", "Living Room Heat Comfort", "Start Pomodoro", "Send Last Photo by SMS", "Allume la lumière"]
+hands = true
+
+# --- named by the user: the router runs them ---------------------------------------------------------
+[[case]]
+text = "run Lights Off"
+tool = "run_shortcut"
+expect = { name = "lights off" }
+
+[[case]]
+text = "Good Morning"
+tool = "run_shortcut"
+expect = { name = "good morning" }
+
+[[case]]
+text = "run the start vacuum shortcut"
+tool = "run_shortcut"
+expect = { name = "start vacuum" }
+
+# --- looser words: the model must pick the shortcut ---------------------------------------------------
+[[case]]
+text = "turn the lights off please"
+tool = "run_shortcut"
+expect = { name = "lights off" }
+
+[[case]]
+text = "could you start the vacuum cleaner"
+tool = "run_shortcut"
+expect = { name = "start vacuum" }
+
+[[case]]
+text = "I'm cold in the living room"
+tool = "run_shortcut"
+expect = { name = "living room heat" }
+
+[[case]]
+text = "switch on the light"
+tool = "run_shortcut"
+expect = { name = "allume" }
+
+[[case]]
+text = "start a focus session"
+tool = "run_shortcut"
+expect = { name = "pomodoro" }
+
+[[case]]
+text = "text my latest photo to my wife"
+tool = "run_shortcut"
+expect = { name = "photo" }
+
+# --- on-screen work in other apps ---------------------------------------------------------------------
+[[case]]
+text = "reply to my last email saying I'll be late, and leave it as a draft"
+tool = "use_app"
+expect = { app = "mail" }
+
+[[case]]
+text = "in Slack, post hi in the general channel"
+tool = "use_app"
+expect = { app = "slack" }
+
+[[case]]
+text = "archive the newest email in Mail"
+tool = "use_app"
+expect = { app = "mail" }
+
+[[case]]
+text = "in WhatsApp, tell Marie I'm on my way"
+tool = "use_app"
+expect = { app = "whatsapp" }
+
+# --- still the everyday tools -------------------------------------------------------------------------
+[[case]]
+text = "open notes"
+tool = "open_app"
+expect = { name = "notes" }
+
+[[case]]
+text = "hello there"
+tool = "chat"

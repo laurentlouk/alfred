@@ -9,6 +9,7 @@
 use serde_json::{Value, json};
 
 use crate::action::Action;
+use crate::catalog::Catalog;
 use crate::normalize::{app_name, browser_name, capitalize, site_url, title_from, url};
 
 /// A tool as the model sees it.
@@ -72,6 +73,45 @@ pub const TOOLS: &[ToolSpec] = &[
 
 /// The `tools` array in the shape Ollama and OpenAI-compatible servers both accept.
 pub fn tools_json() -> Value {
+    tools_json_for(&Catalog::default())
+}
+
+/// The tools for this Mac: the built-in ones, plus `run_shortcut` (its names as an enum) and `use_app`
+/// when the catalog offers them.
+pub fn tools_json_for(catalog: &Catalog) -> Value {
+    let mut tools = base_tools_json();
+    if let Value::Array(list) = &mut tools {
+        if !catalog.shortcuts.is_empty() {
+            list.push(json!({
+                "type": "function",
+                "function": {
+                    "name": "run_shortcut",
+                    "description": "Run one of the user's Shortcuts by its exact name.",
+                    "parameters": { "type": "object", "properties": {
+                        "shortcut": { "type": "string", "enum": catalog.shortcuts, "description": "The shortcut's name." },
+                        "text": { "type": "string", "description": "Input text, only if the user gave some." },
+                    }, "required": ["shortcut"] },
+                }
+            }));
+        }
+        if catalog.hands {
+            list.push(json!({
+                "type": "function",
+                "function": {
+                    "name": "use_app",
+                    "description": "Operate another app on screen to do something no other tool can, such as replying to an email as a draft.",
+                    "parameters": { "type": "object", "properties": {
+                        "app": { "type": "string", "description": "The app's name, such as Mail." },
+                        "text": { "type": "string", "description": "The task, in one sentence." },
+                    }, "required": ["app", "text"] },
+                }
+            }));
+        }
+    }
+    tools
+}
+
+fn base_tools_json() -> Value {
     Value::Array(
         TOOLS
             .iter()
@@ -96,9 +136,21 @@ pub fn tools_json() -> Value {
 /// fields. Decoding under this grammar is what makes a 0.6B model dependable: it cannot answer with
 /// prose where a tool belongs, or invent a tool.
 pub fn decision_schema() -> Value {
+    decision_schema_for(&Catalog::default())
+}
+
+/// The decision schema for this Mac: `run_shortcut` (with a `shortcut` field limited to the real names)
+/// and `use_app` join the actions when the catalog offers them.
+pub fn decision_schema_for(catalog: &Catalog) -> Value {
     let mut actions: Vec<&str> = TOOLS.iter().map(|t| t.name).collect();
+    if !catalog.shortcuts.is_empty() {
+        actions.push("run_shortcut");
+    }
+    if catalog.hands {
+        actions.push("use_app");
+    }
     actions.push("chat");
-    json!({
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "action": { "type": "string", "enum": actions },
@@ -110,7 +162,26 @@ pub fn decision_schema() -> Value {
             "reply": { "type": "string" },
         },
         "required": ["action"],
-    })
+    });
+    if !catalog.shortcuts.is_empty() {
+        schema["properties"]["shortcut"] = json!({ "type": "string", "enum": catalog.shortcuts });
+    }
+    schema
+}
+
+/// The decision guide for this Mac: [`DECISION_GUIDE`] plus the lines for the optional actions.
+pub fn decision_guide_for(catalog: &Catalog) -> String {
+    let mut guide = DECISION_GUIDE.to_string();
+    if !catalog.shortcuts.is_empty() {
+        guide.push_str(&format!(
+            "\nrun_shortcut: run one of the user's Shortcuts (field shortcut: its exact name; field text: input only if the user gave some). The shortcuts: {}.",
+            catalog.shortcuts.join("; ")
+        ));
+    }
+    if catalog.hands {
+        guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as replying to an email (field app: the app; field text: the task in one sentence).");
+    }
+    guide
 }
 
 /// How to fill the decision, appended to the system prompt in structured mode.
@@ -194,6 +265,11 @@ pub fn int_arg(args: &Value, names: &[&str]) -> Option<i64> {
 /// Turn a tool call into an action. `utterance` is what the user said, used as a last resort for
 /// content-bearing fields (a note body the model forgot to fill in).
 pub fn action_from_call(name: &str, raw_args: &Value, utterance: &str) -> Result<Action, String> {
+    action_from_call_in(name, raw_args, utterance, &Catalog::default())
+}
+
+/// [`action_from_call`] knowing this Mac's shortcuts and whether apps can be operated on screen.
+pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalog: &Catalog) -> Result<Action, String> {
     let args = parse_arguments(raw_args);
     let name = name.trim().to_lowercase().replace(['-', ' '], "_");
     match name.as_str() {
@@ -237,6 +313,23 @@ pub fn action_from_call(name: &str, raw_args: &Value, utterance: &str) -> Result
             Ok(Action::OpenUrl { url: u, browser: None })
         }
         "get_time" | "time" | "get_date" | "current_time" => Ok(Action::GetTime),
+        "run_shortcut" | "shortcut" | "run_shortcuts" | "shortcuts" if !catalog.shortcuts.is_empty() => {
+            let raw = string_arg(&args, &["shortcut", "name", "title"]).ok_or("run_shortcut needs the shortcut's name in \"shortcut\".")?;
+            let name = catalog
+                .find_shortcut(&raw)
+                .ok_or_else(|| format!("There is no shortcut called \"{raw}\". The shortcuts are: {}.", catalog.shortcuts.join("; ")))?
+                .to_string();
+            let input = string_arg(&args, &["text", "input"]).filter(|t| crate::catalog::fold(t) != crate::catalog::fold(&name));
+            Ok(Action::RunShortcut { name, input })
+        }
+        "use_app" | "operate_app" | "use" if catalog.hands => {
+            let raw = string_arg(&args, &["app", "name", "application"]).ok_or("use_app needs the app's name in \"app\".")?;
+            let app = app_name(&raw).ok_or_else(|| format!("\"{raw}\" is not an app name."))?;
+            let task = string_arg(&args, &["text", "task", "goal", "instruction"])
+                .or_else(|| (!utterance.trim().is_empty()).then(|| utterance.trim().to_string()))
+                .ok_or("use_app needs the task in \"text\".")?;
+            Ok(Action::UseApp { app, task })
+        }
         other => Err(format!(
             "There is no tool called \"{other}\". The tools are: {}.",
             TOOLS.iter().map(|t| t.name).collect::<Vec<_>>().join(", ")
@@ -334,6 +427,54 @@ mod tests {
         assert_eq!(action_from_call(&name, &args, "").unwrap(), Action::OpenApp { name: "Mail".into() });
         let (n, a) = decision_to_call(&json!({"action": "create_note", "text": "the plumber comes at 3"})).unwrap();
         assert!(matches!(action_from_call(&n, &a, "").unwrap(), Action::CreateNote { body, .. } if body == "The plumber comes at 3"));
+    }
+
+    fn catalog() -> Catalog {
+        Catalog { shortcuts: vec!["Focus Timer".into(), "démarre la musique".into()], hands: true }
+    }
+
+    #[test]
+    fn optional_tools_appear_only_when_available() {
+        assert_eq!(tools_json().as_array().unwrap().len(), TOOLS.len());
+        let tools = tools_json_for(&catalog());
+        let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"run_shortcut") && names.contains(&"use_app"));
+        let schema = decision_schema_for(&catalog());
+        assert_eq!(schema["properties"]["shortcut"]["enum"], json!(["Focus Timer", "démarre la musique"]));
+        assert!(decision_schema()["properties"]["shortcut"].is_null());
+        assert!(decision_guide_for(&catalog()).contains("The shortcuts: Focus Timer; démarre la musique."));
+        assert!(!decision_guide_for(&Catalog::default()).contains("run_shortcut"));
+    }
+
+    #[test]
+    fn shortcut_calls_resolve_to_real_names() {
+        let c = catalog();
+        assert_eq!(
+            action_from_call_in("run_shortcut", &json!({"shortcut": "demarre la musique"}), "", &c).unwrap(),
+            Action::RunShortcut { name: "démarre la musique".into(), input: None }
+        );
+        assert_eq!(
+            action_from_call_in("run_shortcut", &json!({"shortcut": "Focus Timer", "text": "25 minutes"}), "", &c).unwrap(),
+            Action::RunShortcut { name: "Focus Timer".into(), input: Some("25 minutes".into()) }
+        );
+        let e = action_from_call_in("run_shortcut", &json!({"shortcut": "Lights off"}), "", &c).unwrap_err();
+        assert!(e.contains("Focus Timer"), "{e}");
+        assert!(action_from_call("run_shortcut", &json!({"shortcut": "Focus Timer"}), "").is_err(), "no shortcuts, no tool");
+    }
+
+    #[test]
+    fn use_app_needs_hands_and_takes_the_task() {
+        let c = catalog();
+        assert_eq!(
+            action_from_call_in("use_app", &json!({"app": "mail", "text": "reply to the last email as a draft"}), "", &c).unwrap(),
+            Action::UseApp { app: "Mail".into(), task: "reply to the last email as a draft".into() }
+        );
+        assert_eq!(
+            action_from_call_in("use_app", &json!({"app": "Slack"}), "say hi in general", &c).unwrap(),
+            Action::UseApp { app: "Slack".into(), task: "say hi in general".into() }
+        );
+        assert!(action_from_call("use_app", &json!({"app": "Mail", "text": "x"}), "").is_err(), "no hands, no tool");
+        assert!(action_from_call_in("press_button", &json!({"app": "Mail", "name": "Send"}), "", &c).is_err(), "the model cannot press");
     }
 
     #[test]

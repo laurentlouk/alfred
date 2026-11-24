@@ -8,10 +8,11 @@
 use serde_json::Value;
 
 use crate::action::{Action, Executor, Risk};
+use crate::catalog::{Catalog, fold};
 use crate::config::ToolMode;
 use crate::llm::{ChatMessage, ChatModel, ModelReply, Role, ToolCall};
 use crate::router::{self, Route, Slot};
-use crate::tools::{DECISION_GUIDE, action_from_call, decision_schema, decision_to_call, tools_json};
+use crate::tools::{action_from_call_in, decision_guide_for, decision_schema_for, decision_to_call, tools_json_for};
 
 /// Alfred's persona and rules, for the model.
 pub const SYSTEM_PROMPT: &str = "You are Alfred, a discreet, warm and efficient butler-style assistant living on the user's Mac. \
@@ -78,11 +79,49 @@ pub struct Agent {
     awaiting: Option<Slot>,
     pending: Option<Action>,
     mode: ToolMode,
+    catalog: Catalog,
+    /// Shortcut names (folded) that may run without asking, even when the model chose them.
+    trusted: Vec<String>,
 }
 
 impl Agent {
     pub fn new(model: Option<Box<dyn ChatModel>>) -> Self {
-        Self { model, history: Vec::new(), history_turns: 3, awaiting: None, pending: None, mode: ToolMode::Structured }
+        Self {
+            model,
+            history: Vec::new(),
+            history_turns: 3,
+            awaiting: None,
+            pending: None,
+            mode: ToolMode::Structured,
+            catalog: Catalog::default(),
+            trusted: Vec::new(),
+        }
+    }
+
+    /// What this Mac offers beyond the built-in tools (the user's shortcuts, on-screen hands).
+    pub fn with_catalog(mut self, catalog: Catalog) -> Self {
+        self.catalog = catalog;
+        self
+    }
+
+    /// Shortcuts that run without a confirmation even when the model picked them.
+    pub fn with_trusted_shortcuts(mut self, names: &[String]) -> Self {
+        self.trusted = names.iter().map(|n| fold(n)).collect();
+        self
+    }
+
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
+    /// Whether `action` may run without asking. `named_by_user`: the router matched the user's own words
+    /// to this exact action, which is consent for a shortcut they named (never for quitting an app).
+    fn may_run(&self, action: &Action, named_by_user: bool) -> bool {
+        match action {
+            _ if action.risk() == Risk::Safe => true,
+            Action::RunShortcut { name, .. } => named_by_user || self.trusted.contains(&fold(name)),
+            _ => false,
+        }
     }
 
     pub fn with_tool_mode(mut self, mode: ToolMode) -> Self {
@@ -132,9 +171,9 @@ impl Agent {
         if !yes {
             return Turn::say("Very well, I'll leave it.", Source::Confirm);
         }
-        let mut turn = run(vec![action], exec, on, true);
+        let mut turn = run(vec![action], exec, on, &|_| true);
         turn.source = Source::Confirm;
-        turn
+        self.finish(turn)
     }
 
     fn decide(&mut self, text: &str, exec: &dyn Executor, on: &mut dyn FnMut(Event)) -> Turn {
@@ -149,15 +188,21 @@ impl Agent {
         }
         if let Some(slot) = self.awaiting.take() {
             return match slot.fill(text) {
-                Some(action) => self.finish(run(vec![action], exec, on, false)),
+                Some(action) => {
+                    let turn = run(vec![action], exec, on, &|a| self.may_run(a, false));
+                    self.finish(turn)
+                }
                 None => Turn::say("Very well, never mind.", Source::Clarify),
             };
         }
-        match router::route(text) {
-            Some(Route::Act(action)) => self.finish(run(vec![action], exec, on, false)),
+        match router::route_with(text, &self.catalog) {
+            Some(Route::Act(action)) => {
+                let turn = run(vec![action], exec, on, &|a| self.may_run(a, true));
+                self.finish(turn)
+            }
             Some(Route::Ask { question, slot, first }) => {
                 let mut turn = match first {
-                    Some(a) => run(vec![a], exec, on, false),
+                    Some(a) => run(vec![a], exec, on, &|a| self.may_run(a, false)),
                     None => Turn::say("", Source::Clarify),
                 };
                 turn.reply = join([turn.reply.as_str(), question.as_str()]);
@@ -184,7 +229,9 @@ impl Agent {
         on(Event::Thinking);
         // Small models follow a short, focused prompt best: in structured mode the decision guide leads.
         let system = match self.mode {
-            ToolMode::Structured => format!("You are Alfred, a warm, discreet assistant on the user's Mac. {DECISION_GUIDE}"),
+            ToolMode::Structured => {
+                format!("You are Alfred, a warm, discreet assistant on the user's Mac. {}", decision_guide_for(&self.catalog))
+            }
             ToolMode::Native => SYSTEM_PROMPT.to_string(),
         };
         let mut messages = vec![ChatMessage::new(Role::System, system)];
@@ -193,8 +240,8 @@ impl Agent {
             messages.push(ChatMessage::new(Role::Assistant, alfred.clone()));
         }
         messages.push(ChatMessage::new(Role::User, text));
-        let tools: Value = tools_json();
-        let schema: Value = decision_schema();
+        let tools: Value = tools_json_for(&self.catalog);
+        let schema: Value = decision_schema_for(&self.catalog);
         for round in 0..MAX_MODEL_ROUNDS {
             let answer = match self.mode {
                 ToolMode::Native => model.chat(&messages, &tools),
@@ -229,7 +276,7 @@ impl Agent {
             let mut actions = Vec::new();
             let mut errors = Vec::new();
             for call in &calls {
-                match action_from_call(&call.name, &call.arguments, text).map(|a| trust_only_what_was_said(a, text)) {
+                match action_from_call_in(&call.name, &call.arguments, text, &self.catalog).map(|a| trust_only_what_was_said(a, text)) {
                     Ok(a) if !actions.contains(&a) => actions.push(a),
                     Ok(_) => {}
                     Err(e) => errors.push((call.clone(), e)),
@@ -237,7 +284,8 @@ impl Agent {
             }
             if !actions.is_empty() {
                 actions.truncate(MAX_ACTIONS_PER_TURN);
-                let mut turn = self.finish(run(actions, exec, on, false));
+                let turn = run(actions, exec, on, &|a| self.may_run(a, false));
+                let mut turn = self.finish(turn);
                 turn.source = if turn.pending.is_some() { Source::Confirm } else { Source::Model };
                 return turn;
             }
@@ -266,9 +314,15 @@ impl Agent {
 
 /// Small models fill optional fields the user never gave (a reminder delay of "1 minute"). Keep a delay
 /// only when the request talks about minutes or hours.
+/// The same for shortcut input: models paraphrase the request into it ("Start vacuuming"), and a shortcut
+/// that takes input would act on that. Input is kept only when the user's words carry some, after a colon
+/// or in quotes ("run Translate: good morning").
 fn trust_only_what_was_said(action: Action, said: &str) -> Action {
     match action {
         Action::CreateReminder { title, minutes: Some(_) } if !mentions_delay(said) => Action::CreateReminder { title, minutes: None },
+        Action::RunShortcut { name, input: Some(_) } if !said.contains([':', '"', '“', '«']) => {
+            Action::RunShortcut { name, input: None }
+        }
         other => other,
     }
 }
@@ -278,19 +332,22 @@ fn mentions_delay(said: &str) -> bool {
     ["minute", " min", "mins", "hour", " hr", "hrs"].iter().any(|w| l.contains(w))
 }
 
-/// Run actions in order; a risky one (unless `confirmed`) stops the run and becomes the pending question.
-fn run(actions: Vec<Action>, exec: &dyn Executor, on: &mut dyn FnMut(Event), confirmed: bool) -> Turn {
+/// Run actions in order. One that `may_run` refuses stops the run and becomes the pending question; so
+/// does a risky step an action stopped before (its outcome's follow-up).
+fn run(actions: Vec<Action>, exec: &dyn Executor, on: &mut dyn FnMut(Event), may_run: &dyn Fn(&Action) -> bool) -> Turn {
     let mut done = Vec::new();
     let mut words = Vec::new();
     let mut pending = None;
     for action in actions {
-        if action.risk() == Risk::Confirm && !confirmed {
+        if !may_run(&action) {
             words.push(action.confirm_question());
             pending = Some(action);
             break;
         }
         on(Event::Acting(&action));
-        let result = exec.execute(&action).map(|o| o.summary);
+        let outcome = exec.execute(&action);
+        let follow_up = outcome.as_ref().ok().and_then(|o| o.follow_up.clone());
+        let result = outcome.map(|o| o.summary);
         words.push(match &result {
             Ok(summary) => summary.clone(),
             Err(e) => format!("I couldn't manage that: {e}"),
@@ -298,6 +355,11 @@ fn run(actions: Vec<Action>, exec: &dyn Executor, on: &mut dyn FnMut(Event), con
         let d = Done { action, result };
         on(Event::Acted(&d));
         done.push(d);
+        if let Some(next) = follow_up {
+            words.push(next.confirm_question());
+            pending = Some(next);
+            break;
+        }
     }
     let source = if pending.is_some() { Source::Confirm } else { Source::Router };
     Turn { reply: join(words.iter().map(String::as_str)), done, pending, source }

@@ -16,9 +16,11 @@ Summon it, say or type what you need, and it opens your apps, saves notes, adds 
 - **Summon it anywhere.** Press <kbd>⌃⌥Space</kbd> and the panel drops in at the top of the screen you're on. <kbd>esc</kbd> hides it.
 - **Talk or type.** Click the orb (or <kbd>⌘L</kbd>) and speak; Alfred stops listening when you do.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches Google, opens links, tells the time.
+- **It runs your Shortcuts.** "Run Good Morning", or just "start the vacuum" when you have a shortcut for it.
+- **It can use other apps on screen.** With [agent-desktop](https://github.com/vercel-labs/agent-desktop) installed, "reply to my last email saying I'll be late, as a draft" works in Mail, and the same goes for Slack or WhatsApp.
 - **It talks back.** Every answer is spoken with Kokoro, sentence by sentence, while the orb ripples with the voice.
 - **Everything stays on your Mac.** The language model runs in Ollama, speech and dictation run in-process. No account, no cloud.
-- **Safe by default.** No shell, no arbitrary scripts. Quitting an app waits for your yes.
+- **Safe by default.** No shell, no arbitrary scripts. Quitting an app, a shortcut Alfred picked for you, and any Send, Delete or Pay click wait for your yes.
 
 Try:
 
@@ -81,6 +83,7 @@ alfred ask "open Notes and save buy oat milk"
 | `alfred listen FILE.wav` | Transcribe a recording |
 | `alfred setup` | Write the config, download the models, pull the language model |
 | `alfred doctor` | Check what is ready and what is missing |
+| `alfred shortcuts` | List the Shortcuts Alfred can run |
 | `alfred eval [--model]` | Score Alfred on the request fixture in `eval/utterances.toml` |
 
 ## How it works
@@ -111,6 +114,31 @@ alfred ask "open Notes and save buy oat milk"
 
 A bigger model follows looser requests better: set `model = "qwen3.5:0.8b"` or `"qwen3:4b"` in the config and run `ollama pull` for it.
 
+## Reaching other apps
+
+**Shortcuts.** Every shortcut in your Shortcuts app is available. Name one ("run Good Morning", "run the Lights Off shortcut") and it runs at once. Say it more loosely ("I'm cold in the living room") and the model picks the shortcut, then asks before running it, because shortcuts drive real devices. Names you trust can skip the question: list them in `[shortcuts] trusted`. `alfred shortcuts` shows them all.
+
+**On screen.** For apps with no shortcut, Alfred can operate the app itself through its accessibility tree:
+
+```bash
+brew install agent-desktop
+```
+
+Then allow Alfred in System Settings → Privacy & Security → Accessibility (or your terminal, for the command line). Alfred looks at the app's window, picks one step, acts, and looks again, at most 8 steps. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:4b` by default):
+
+```bash
+ollama pull qwen3:4b
+```
+
+Measured with `alfred eval --model eval/apps.toml` (15 requests: named and loose shortcuts, on-screen tasks):
+
+| Main model | Loose requests right | Overall | Time per decision |
+| --- | --- | --- | --- |
+| `qwen3:0.6b` | 1 of 11 | 33% | about 0.2 s |
+| `qwen3:4b` | 10 of 11 | 93% | 0.5 to 1 s |
+
+Named shortcuts go through the router and work with any model. For loose requests to your apps, set `[llm] model = "qwen3:4b"`.
+
 ## Configuration
 
 `~/Library/Application Support/Alfred/config.toml` (`ALFRED_HOME` moves the folder). Every field has a default:
@@ -134,6 +162,15 @@ hide_on_blur = true
 [search]
 engine = "google"            # duckduckgo, bing
 browser = ""                 # empty for your default browser, or "Safari"
+
+[shortcuts]
+enabled = true
+trusted = []                 # shortcut names that run without asking when Alfred picks them
+
+[desktop]
+enabled = true               # on-screen actions, when agent-desktop is installed
+model = "qwen3:4b"           # the model that reads app windows
+max_steps = 8
 ```
 
 ## Develop
@@ -157,6 +194,7 @@ Scenes: `idle`, `listening`, `thinking`, `speaking`, `conversation`, `confirm`.
 | [`crates/alfred-core`](crates/alfred-core) | Router, tools and argument repair, the agent loop, the LLM clients, config, eval. No UI, no native code |
 | [`crates/alfred-mac`](crates/alfred-mac) | The macOS executor: apps, Notes, Reminders, browser |
 | [`crates/alfred-voice`](crates/alfred-voice) | Kokoro speech and Moonshine dictation, model downloads |
+| [`crates/alfred-hands`](crates/alfred-hands) | Operating apps on screen with agent-desktop: the observe-decide-act loop and its guard |
 | [`apps/alfred`](apps/alfred) | The Rune app and the `alfred` command line |
 
 Design notes live in [`docs/specs`](docs/specs).
@@ -168,6 +206,7 @@ Design notes live in [`docs/specs`](docs/specs).
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) voice (Apache-2.0), phonemized by [misaki-rs](https://github.com/MicheleYin/misaki-rs) (MIT)
 - [Moonshine](https://github.com/moonshine-ai/moonshine) tiny for dictation (MIT)
 - [Ollama](https://ollama.com) and [Qwen3](https://huggingface.co/Qwen) (Apache-2.0)
+- [agent-desktop](https://github.com/vercel-labs/agent-desktop) for on-screen actions, optional (Apache-2.0)
 
 No GPL code is linked: Kokoro's phonemes come from misaki-rs rather than espeak-ng.
 

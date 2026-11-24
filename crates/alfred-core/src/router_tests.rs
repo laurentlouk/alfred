@@ -162,3 +162,54 @@ fn clean_strips_politeness_only_at_the_edges() {
     assert_eq!(clean("Could you please search for thank you cards"), "search for thank you cards");
     assert_eq!(clean("alfredo pasta recipe"), "alfredo pasta recipe");
 }
+
+fn shortcuts() -> crate::catalog::Catalog {
+    crate::catalog::Catalog {
+        shortcuts: ["Focus Timer", "Bonjour", "démarre la musique", "Chauffage salon confort", "Chauffage salon éco"]
+            .map(String::from)
+            .to_vec(),
+        hands: false,
+    }
+}
+
+fn shortcut(name: &str) -> Action {
+    Action::RunShortcut { name: name.into(), input: None }
+}
+
+#[test]
+fn named_shortcuts_route_directly() {
+    let c = shortcuts();
+    let act = |t: &str| match route_with(t, &c) {
+        Some(Route::Act(a)) => a,
+        other => panic!("{t:?} → {other:?}"),
+    };
+    assert_eq!(act("run Bonjour"), shortcut("Bonjour"));
+    assert_eq!(act("run the Bonjour shortcut"), shortcut("Bonjour"));
+    assert_eq!(act("lance le raccourci démarre la musique"), shortcut("démarre la musique"));
+    assert_eq!(act("run demarre la musique"), shortcut("démarre la musique"));
+    assert_eq!(act("run salon confort"), shortcut("Chauffage salon confort"));
+    assert_eq!(act("Focus Timer"), shortcut("Focus Timer"), "a two-word name said on its own");
+    assert_eq!(act("hey alfred, focus timer please"), shortcut("Focus Timer"));
+}
+
+#[test]
+fn shortcuts_never_fire_by_accident() {
+    let c = shortcuts();
+    assert_eq!(route_with("bonjour", &c), None, "a one-word name needs the verb");
+    assert_eq!(route_with("run chauffage salon", &c), None, "two shortcuts match: the model decides");
+    assert_eq!(
+        route_with("start spotify", &c),
+        Some(Route::Act(Action::OpenApp { name: "Spotify".into() })),
+        "not a shortcut: open the app"
+    );
+    assert_eq!(route("run Bonjour"), None, "no catalog, no shortcuts");
+}
+
+#[test]
+fn start_only_opens_apps_alfred_knows() {
+    assert_eq!(act("start spotify"), app("Spotify"));
+    assert_eq!(act("start the music app"), app("Music"));
+    assert_eq!(route("start the vacuum"), None);
+    assert_eq!(route("start a timer for five minutes"), None);
+    assert_eq!(act("open the vacuum app"), app("Vacuum"), "open names an app whatever it is");
+}

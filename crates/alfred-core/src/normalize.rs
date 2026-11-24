@@ -91,6 +91,13 @@ pub fn app_name(raw: &str) -> Option<String> {
     Some(cleaned.split_whitespace().map(capitalize).collect::<Vec<_>>().join(" "))
 }
 
+/// Whether Alfred knows this app by name (one of its aliases or their real names).
+pub fn is_known_app(raw: &str) -> bool {
+    let lower = strip_articles(raw.trim()).to_lowercase();
+    let lower = lower.strip_suffix(" app").unwrap_or(&lower);
+    APP_ALIASES.iter().any(|(alias, real)| *alias == lower || real.to_lowercase() == lower)
+}
+
 /// The website a spoken name stands for: "youtube" → "https://www.youtube.com".
 pub fn site_url(name: &str) -> Option<String> {
     let lower = strip_articles(name.trim()).to_lowercase();

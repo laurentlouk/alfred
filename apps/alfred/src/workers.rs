@@ -10,9 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 
+use alfred_core::Event;
 use alfred_core::config::{self, Config};
-use alfred_core::{Agent, Event, llm};
-use alfred_mac::MacExecutor;
 use alfred_voice::{Listener, Speaker};
 use rune::AppHandle;
 
@@ -48,9 +47,7 @@ pub fn spawn(config: Config, me: AppHandle<Ui>) -> Links {
     std::thread::Builder::new()
         .name("alfred-brain".into())
         .spawn(move || {
-            let mut agent =
-                Agent::new(Some(llm::from_config(&cfg.llm))).with_history_turns(cfg.llm.history_turns).with_tool_mode(cfg.llm.tool_mode);
-            let exec = MacExecutor::from_config(&cfg);
+            let (mut agent, exec) = crate::wiring::build(&cfg);
             let label = agent.model_name().unwrap_or_default();
             ui.update(move |s, _| s.model_label = label);
             for job in brain_rx {

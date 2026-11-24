@@ -2,11 +2,11 @@
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use alfred_core::config::{self, Config, Provider};
 use alfred_core::llm::{self, Ollama};
 use alfred_core::{Agent, DryRun, Event, Executor};
-use alfred_mac::MacExecutor;
 use alfred_voice::{Listener, Speaker, models};
 
 use crate::speech::{self, Playback};
@@ -17,13 +17,15 @@ USAGE
   alfred                      open Alfred (summon it any time with the shortcut, ctrl+alt+space by default)
   alfred ask [options] TEXT   do what TEXT asks and print the answer
       --dry-run                 show the actions instead of running them
-      --yes                     answer yes when Alfred asks to confirm
+      --yes                     answer yes when Alfred asks to confirm (including a Send it stopped before)
       --speak                   also say the answer out loud
   alfred say TEXT             speak TEXT with Alfred's voice
   alfred listen FILE.wav      transcribe a recording
   alfred setup                write the config, download the voice models, pull the language model
   alfred doctor               check what is ready and what is missing
+  alfred shortcuts            list the Shortcuts Alfred can run
   alfred eval [--model] [FILE]  score the router (and with --model, the language model) on a fixture
+                              (eval/utterances.toml by default; eval/apps.toml covers shortcuts and apps)
 
 FILES
   config  ~/Library/Application Support/Alfred/config.toml   (ALFRED_HOME overrides the folder)
@@ -41,6 +43,7 @@ pub fn run(args: &[String]) -> i32 {
         "setup" => setup(),
         "doctor" => doctor(),
         "eval" => eval(&rest),
+        "shortcuts" => list_shortcuts(),
         "version" | "--version" => {
             println!("alfred {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -70,10 +73,8 @@ fn ask(args: &[String]) -> Result<(), String> {
         return Err("say what to do, for example: alfred ask \"open Notes\"".into());
     }
     let cfg = load_config()?;
-    let mut agent =
-        Agent::new(Some(llm::from_config(&cfg.llm))).with_history_turns(cfg.llm.history_turns).with_tool_mode(cfg.llm.tool_mode);
+    let (mut agent, mac) = crate::wiring::build(&cfg);
     let dry = DryRun::new();
-    let mac = MacExecutor::from_config(&cfg);
     let exec: &dyn Executor = if flag("--dry-run") { &dry } else { &mac };
     let mut show = |e: Event| match e {
         Event::Thinking => eprintln!("… thinking with {}", agent_label(&cfg)),
@@ -225,17 +226,72 @@ fn doctor() -> Result<(), String> {
         },
         Provider::OpenAi => println!("· OpenAI-compatible server at {} (not checked)", cfg.llm.base_url),
     }
+    let shortcut_count =
+        alfred_mac::find_program("shortcuts").map(|_| alfred_mac::shortcuts::list(Duration::from_secs(15)).map(|l| l.len()));
+    match shortcut_count {
+        Some(Ok(n)) => println!("· {n} shortcuts available (`alfred shortcuts` lists them)"),
+        Some(Err(e)) => line(false, format!("shortcuts: {e}")),
+        None => println!("· the shortcuts command isn't available on this Mac"),
+    }
+    match alfred_mac::find_program(&cfg.desktop.command) {
+        Some(program) => {
+            let status = alfred_hands::desktop::Desktop::call(
+                &alfred_hands::desktop::AgentDesktop::new(program.clone()),
+                &["status".to_string()],
+                None,
+            );
+            let access = status
+                .as_ref()
+                .ok()
+                .and_then(|s| s["permissions"]["accessibility"]["state"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "unknown".into());
+            line(true, format!("agent-desktop at {}", program.display()));
+            line(
+                access == "granted",
+                format!(
+                    "Accessibility for on-screen actions: {access} (System Settings → Privacy & Security → Accessibility: allow Alfred, or the terminal running it)"
+                ),
+            );
+            if cfg.llm.provider == Provider::Ollama
+                && let Ok(list) = Ollama::new(&cfg.llm.base_url, &cfg.desktop.model, 5).installed()
+            {
+                line(
+                    list.iter().any(|m| same_model(m, &cfg.desktop.model)),
+                    format!("on-screen model {} (ollama pull {})", cfg.desktop.model, cfg.desktop.model),
+                );
+            }
+        }
+        None => println!("· on-screen actions are off: `brew install agent-desktop` turns them on"),
+    }
     let mic = rune::Recorder::permission();
     println!("· microphone permission: {mic:?} (asked the first time you talk to Alfred)");
     println!("· Notes and Reminders ask for Automation permission the first time Alfred uses them");
     if ok { Ok(()) } else { Err("some pieces are missing: `alfred setup` fixes most of them".into()) }
 }
 
+fn list_shortcuts() -> Result<(), String> {
+    let cfg = load_config()?;
+    let names = alfred_mac::shortcuts::list(Duration::from_secs(15))?;
+    if names.is_empty() {
+        println!("No shortcuts yet: make some in the Shortcuts app, then say \"run <name>\".");
+        return Ok(());
+    }
+    let trusted: Vec<String> = cfg.shortcuts.trusted.iter().map(|t| alfred_core::catalog::fold(t)).collect();
+    for n in &names {
+        let mark = if trusted.contains(&alfred_core::catalog::fold(n)) { "  (runs without asking)" } else { "" };
+        println!("{n}{mark}");
+    }
+    println!(
+        "\nSay \"run <name>\" to run one. When Alfred picks one from looser words it asks first, unless the name is in [shortcuts] trusted."
+    );
+    Ok(())
+}
+
 fn eval(args: &[String]) -> Result<(), String> {
     let with_model = args.iter().any(|a| a == "--model");
-    let cases = match args.iter().find(|a| !a.starts_with("--")) {
-        Some(file) => alfred_core::eval::load(&PathBuf::from(file))?,
-        None => alfred_core::eval::parse(FIXTURE)?,
+    let (cases, catalog) = match args.iter().find(|a| !a.starts_with("--")) {
+        Some(file) => alfred_core::eval::load_with_catalog(&PathBuf::from(file))?,
+        None => alfred_core::eval::parse_with_catalog(FIXTURE)?,
     };
     let cfg = load_config()?;
     if with_model {
@@ -245,7 +301,7 @@ fn eval(args: &[String]) -> Result<(), String> {
     }
     let report = alfred_core::eval::run(&cases, || {
         let model = with_model.then(|| llm::from_config(&cfg.llm));
-        Agent::new(model).with_tool_mode(cfg.llm.tool_mode)
+        Agent::new(model).with_tool_mode(cfg.llm.tool_mode).with_catalog(catalog.clone())
     });
     print!("{}", report.render());
     Ok(())

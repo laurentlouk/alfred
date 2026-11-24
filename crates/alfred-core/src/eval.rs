@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::action::DryRun;
 use crate::agent::{Agent, Event, Source};
+use crate::catalog::Catalog;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Case {
@@ -24,6 +25,18 @@ pub struct Case {
 struct Fixture {
     #[serde(rename = "case")]
     cases: Vec<Case>,
+    /// The capabilities the cases assume (shortcut names, on-screen hands), so a fixture is the same on
+    /// every machine.
+    #[serde(default)]
+    catalog: Option<CatalogSpec>,
+}
+
+#[derive(Deserialize)]
+struct CatalogSpec {
+    #[serde(default)]
+    shortcuts: Vec<String>,
+    #[serde(default)]
+    hands: bool,
 }
 
 pub fn load(path: &Path) -> Result<Vec<Case>, String> {
@@ -33,7 +46,19 @@ pub fn load(path: &Path) -> Result<Vec<Case>, String> {
 
 /// Cases from fixture text (TOML with `[[case]]` tables).
 pub fn parse(text: &str) -> Result<Vec<Case>, String> {
-    toml::from_str::<Fixture>(text).map(|f| f.cases).map_err(|e| e.to_string())
+    parse_with_catalog(text).map(|(cases, _)| cases)
+}
+
+/// Cases and the catalog they assume (empty when the fixture has no `[catalog]`).
+pub fn parse_with_catalog(text: &str) -> Result<(Vec<Case>, Catalog), String> {
+    let f = toml::from_str::<Fixture>(text).map_err(|e| e.to_string())?;
+    let catalog = f.catalog.map(|c| Catalog { shortcuts: c.shortcuts, hands: c.hands }).unwrap_or_default();
+    Ok((f.cases, catalog))
+}
+
+pub fn load_with_catalog(path: &Path) -> Result<(Vec<Case>, Catalog), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_with_catalog(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +200,17 @@ mod tests {
         assert!((report.router_accuracy() - 1.0).abs() < 1e-9);
         assert!((report.model_accuracy() - 0.5).abs() < 1e-9);
         assert!(report.render().contains("router handled 50%"));
+    }
+
+    #[test]
+    fn the_apps_fixture_brings_its_catalog_and_the_router_names_shortcuts() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/apps.toml");
+        let (cases, catalog) = load_with_catalog(&path).unwrap();
+        assert!(catalog.hands && catalog.shortcuts.len() >= 5);
+        let report = run(&cases, || Agent::new(None).with_catalog(catalog.clone()));
+        let wrong: Vec<_> = report.results.iter().filter(|r| Report::by_router(r) && !r.ok).map(|r| (&r.case.text, &r.got)).collect();
+        assert!(wrong.is_empty(), "router mistakes: {wrong:#?}");
+        assert!(report.results.iter().any(|r| Report::by_router(r) && r.case.tool == "run_shortcut"));
     }
 
     #[test]

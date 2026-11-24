@@ -4,15 +4,19 @@
 //! `on run argv`, and the inputs travel as separate process arguments, so a note body such as
 //! `" & do shell script "…` is just text.
 
+pub mod shortcuts;
+
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alfred_core::normalize::search_url;
-use alfred_core::{Action, Executor, Outcome};
+use alfred_core::{Action, Executor, Hands, Outcome};
 
 /// Runs actions for real on this Mac.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MacExecutor {
     /// `google`, `duckduckgo` or `bing`.
     pub search_engine: String,
@@ -22,11 +26,22 @@ pub struct MacExecutor {
     pub timeout: Duration,
     /// Bring Notes forward to show a note it just saved.
     pub show_notes: bool,
+    /// How long a shortcut may run (one that asks for input waits until this runs out).
+    pub shortcut_timeout: Duration,
+    /// The on-screen engine for `use_app` and `press_button`, when `agent-desktop` is set up.
+    pub hands: Option<Arc<dyn Hands>>,
 }
 
 impl Default for MacExecutor {
     fn default() -> Self {
-        Self { search_engine: "google".into(), browser: None, timeout: Duration::from_secs(60), show_notes: true }
+        Self {
+            search_engine: "google".into(),
+            browser: None,
+            timeout: Duration::from_secs(60),
+            show_notes: true,
+            shortcut_timeout: Duration::from_secs(120),
+            hands: None,
+        }
     }
 }
 
@@ -37,6 +52,17 @@ impl MacExecutor {
             browser: Some(c.search.browser.trim().to_string()).filter(|b| !b.is_empty()),
             ..Self::default()
         }
+    }
+
+    pub fn with_hands(mut self, hands: Arc<dyn Hands>) -> Self {
+        self.hands = Some(hands);
+        self
+    }
+
+    fn hands(&self) -> Result<&Arc<dyn Hands>, String> {
+        self.hands.as_ref().ok_or_else(|| {
+            "Operating apps on screen needs agent-desktop: `brew install agent-desktop`, then allow Alfred in System Settings → Privacy & Security → Accessibility.".to_string()
+        })
     }
 
     fn open_in_browser(&self, url: &str, browser: Option<&str>) -> Result<(), String> {
@@ -117,6 +143,13 @@ impl Executor for MacExecutor {
                 self.open_in_browser(url, browser.as_deref())?;
                 Ok(Outcome::new(action.done_phrase()))
             }
+            Action::RunShortcut { name, input } => {
+                let output = shortcuts::run(name, input.as_deref(), self.shortcut_timeout)?;
+                let said = output.trim();
+                Ok(Outcome::new(if said.is_empty() { action.done_phrase() } else { clip(said, 400) }))
+            }
+            Action::UseApp { app, task } => self.hands()?.use_app(app, task),
+            Action::PressButton { app, role, name } => self.hands()?.press(app, role, name),
             Action::GetTime => {
                 let mut cmd = Command::new("date");
                 cmd.arg("+%H:%M on %A %-d %B");
@@ -124,6 +157,28 @@ impl Executor for MacExecutor {
             }
         }
     }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max { s.to_string() } else { s.chars().take(max - 1).collect::<String>() + "…" }
+}
+
+/// Where a program lives: a full path as given, else the first match on PATH or in the folders Homebrew,
+/// npm and friends install to. An app opened from Finder gets a minimal PATH, so these are searched too.
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    if name.contains('/') {
+        let p = PathBuf::from(name);
+        return p.is_file().then_some(p);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    dirs.extend(
+        ["/opt/homebrew/bin", "/usr/local/bin"]
+            .map(PathBuf::from)
+            .into_iter()
+            .chain([".local/bin", ".bun/bin", ".npm-global/bin"].map(|d| home.join(d))),
+    );
+    dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
 }
 
 /// The note as Notes stores it: a heading (its title) and the text, HTML-escaped, one `<div>` per line.
@@ -178,7 +233,7 @@ fn explain_applescript_error(e: &str) -> String {
 }
 
 /// Run a command with a timeout; Ok(stdout) on success, Err(stderr or a description) otherwise.
-fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
+pub fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
     let program = cmd.get_program().to_string_lossy().into_owned();
     let mut child = cmd
         .stdin(Stdio::null())
@@ -269,6 +324,20 @@ mod tests {
         }
         let o = MacExecutor::default().execute(&Action::GetTime).unwrap();
         assert!(o.summary.starts_with("It's ") && o.summary.contains(" on "), "{}", o.summary);
+    }
+
+    #[test]
+    fn on_screen_actions_explain_how_to_set_them_up() {
+        let e = MacExecutor::default().execute(&Action::UseApp { app: "Mail".into(), task: "x".into() }).unwrap_err();
+        assert!(e.contains("brew install agent-desktop") && e.contains("Accessibility"), "{e}");
+    }
+
+    #[test]
+    fn programs_are_found_by_name_or_path() {
+        assert_eq!(find_program("/bin/ls"), Some(PathBuf::from("/bin/ls")));
+        assert!(find_program("ls").is_some());
+        assert_eq!(find_program("definitely-not-a-program-7f3a"), None);
+        assert_eq!(find_program("/nope/agent-desktop"), None);
     }
 
     #[test]

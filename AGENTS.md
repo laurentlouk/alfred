@@ -6,7 +6,7 @@ The agents the grimoire harness dispatches in this repository. The pipeline (`ro
 
 | Agent | Repo | Default model | Owns |
 | --- | --- | --- | --- |
-| `alfred-engineer` | `alfred` (the root) | sonnet (opus in unattended runs) | `grimoire:tdd`; the Rust workspace: `crates/alfred-core`, `crates/alfred-mac`, `crates/alfred-voice`, `apps/alfred` |
+| `alfred-engineer` | `alfred` (the root) | sonnet (opus in unattended runs) | `grimoire:tdd`; the Rust workspace: `crates/alfred-core`, `crates/alfred-mac`, `crates/alfred-voice`, `crates/alfred-hands`, `apps/alfred` |
 
 ## Scouts in use
 

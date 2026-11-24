@@ -6,7 +6,8 @@
 //! the side of `None`: a wrong action is worse than a slower right one.
 
 use crate::action::Action;
-use crate::normalize::{app_name, browser_name, capitalize, site_url, strip_prefix_ci, strip_suffix_ci, title_from, url};
+use crate::catalog::Catalog;
+use crate::normalize::{app_name, browser_name, capitalize, is_known_app, site_url, strip_prefix_ci, strip_suffix_ci, title_from, url};
 
 /// What the router decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,11 @@ impl Slot {
 
 /// Route a request, or `None` to hand it to the LLM.
 pub fn route(text: &str) -> Option<Route> {
+    route_with(text, &Catalog::default())
+}
+
+/// Route a request knowing what this Mac offers (the user's shortcuts).
+pub fn route_with(text: &str, catalog: &Catalog) -> Option<Route> {
     let t = clean(text);
     if t.is_empty() {
         return None;
@@ -51,7 +57,46 @@ pub fn route(text: &str) -> Option<Route> {
     if is_time_question(&t.to_lowercase()) {
         return Some(Route::Act(Action::GetTime));
     }
-    note(&t).or_else(|| reminder(&t)).or_else(|| search(&t)).or_else(|| quit(&t)).or_else(|| open(&t))
+    shortcut(&t, catalog).or_else(|| note(&t)).or_else(|| reminder(&t)).or_else(|| search(&t)).or_else(|| quit(&t)).or_else(|| open(&t))
+}
+
+// ---- shortcuts ------------------------------------------------------------------------------------
+
+/// A request that names one of the user's shortcuts: "run Bonjour", "run the Réveil shortcut", "lance
+/// démarre la musique", or a name of two words or more said on its own ("Focus Timer"). A one-word name
+/// needs the verb, so "bonjour" said as a greeting never runs a shortcut called "Bonjour".
+fn shortcut(t: &str, catalog: &Catalog) -> Option<Route> {
+    if catalog.shortcuts.is_empty() {
+        return None;
+    }
+    const HEADS: &[&str] = &[
+        "run the shortcut",
+        "run my shortcut",
+        "run shortcut",
+        "start the shortcut",
+        "start shortcut",
+        "lance le raccourci",
+        "lancer le raccourci",
+        "execute le raccourci",
+        "exécute le raccourci",
+        "shortcut",
+        "raccourci",
+        "run",
+        "lance",
+        "lancer",
+        "exécute",
+        "execute",
+        "start",
+    ];
+    if let Some(rest) = head(t, HEADS) {
+        let rest = strip_suffix_ci(rest, " shortcut").or_else(|| strip_suffix_ci(rest, " raccourci")).unwrap_or(rest);
+        let rest = strip_words(rest.trim().trim_matches(['"', '“', '”', '«', '»']).trim(), &["the", "my", "le", "la", "mon", "ma"]);
+        if let Some(name) = catalog.find_shortcut(rest) {
+            return Some(Route::Act(Action::RunShortcut { name: name.to_string(), input: None }));
+        }
+    }
+    let name = catalog.exact_shortcut(t)?;
+    (name.split_whitespace().count() >= 2).then(|| Route::Act(Action::RunShortcut { name: name.to_string(), input: None }))
 }
 
 /// Drop wake words, politeness and trailing punctuation: "Hey Alfred, could you open Notes for me?" →
@@ -440,7 +485,13 @@ fn open(t: &str) -> Option<Route> {
     if let Some(u) = url(target).or_else(|| site_url(target)) {
         return Some(Route::Act(Action::OpenUrl { url: u, browser }));
     }
-    if link_only || strip_prefix_ci(t, "start").is_some() && (target.starts_with("a ") || target.starts_with("an ")) {
+    if link_only {
+        return None;
+    }
+    // "start" and "fire up" take any object ("start the vacuum", "start a timer"): only apps Alfred knows
+    // by name count. "open", "launch" and the rest name an app whatever it is.
+    let loose = ["start", "fire up"].iter().any(|h| strip_prefix_ci(t, h).is_some());
+    if loose && !is_known_app(target) {
         return None;
     }
     app_name(target).map(|name| Route::Act(Action::OpenApp { name }))

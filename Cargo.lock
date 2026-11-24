@@ -125,6 +125,7 @@ name = "alfred"
 version = "0.1.0"
 dependencies = [
  "alfred-core",
+ "alfred-hands",
  "alfred-mac",
  "alfred-voice",
  "rune",
@@ -139,6 +140,14 @@ dependencies = [
  "serde_json",
  "toml",
  "ureq 3.5.2",
+]
+
+[[package]]
+name = "alfred-hands"
+version = "0.1.0"
+dependencies = [
+ "alfred-core",
+ "serde_json",
 ]
 
 [[package]]

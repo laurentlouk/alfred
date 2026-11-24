@@ -12,6 +12,43 @@ pub struct Config {
     pub voice: VoiceConfig,
     pub ui: UiConfig,
     pub search: SearchConfig,
+    pub shortcuts: ShortcutsConfig,
+    pub desktop: DesktopConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShortcutsConfig {
+    /// Offer the user's Shortcuts as actions.
+    pub enabled: bool,
+    /// Shortcut names that run without asking even when the model picked them. A shortcut you name
+    /// yourself ("run Bonjour") never asks.
+    pub trusted: Vec<String>,
+}
+
+impl Default for ShortcutsConfig {
+    fn default() -> Self {
+        Self { enabled: true, trusted: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopConfig {
+    /// Operate apps on screen through `agent-desktop` when it is installed.
+    pub enabled: bool,
+    /// The model that drives on-screen steps. Reading an app's interface needs more than a 0.6B model.
+    pub model: String,
+    /// The most steps one request may take.
+    pub max_steps: u32,
+    /// The `agent-desktop` program: a name looked up on PATH and in Homebrew's folders, or a full path.
+    pub command: String,
+}
+
+impl Default for DesktopConfig {
+    fn default() -> Self {
+        Self { enabled: true, model: "qwen3:4b".into(), max_steps: 8, command: "agent-desktop".into() }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +104,11 @@ impl Default for LlmConfig {
 }
 
 impl LlmConfig {
+    /// The same server and settings with another model (the one that drives on-screen steps).
+    pub fn with_model(&self, model: &str) -> Self {
+        Self { model: model.to_string(), ..self.clone() }
+    }
+
     pub fn api_key(&self) -> Option<String> {
         std::env::var(&self.api_key_env).ok().filter(|k| !k.trim().is_empty())
     }
@@ -182,6 +224,9 @@ mod tests {
         assert_eq!(c.llm.model, "qwen3:0.6b");
         assert_eq!(c.voice.voice, "bm_george");
         assert_eq!(c.ui.shortcut, "ctrl+alt+space");
+        assert!(c.shortcuts.enabled && c.shortcuts.trusted.is_empty());
+        assert_eq!(c.desktop.model, "qwen3:4b");
+        assert_eq!(c.llm.with_model("qwen3:4b").base_url, c.llm.base_url);
     }
 
     #[test]

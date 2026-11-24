@@ -26,6 +26,12 @@ pub enum Action {
     OpenUrl { url: String, browser: Option<String> },
     /// Say the local time and date.
     GetTime,
+    /// Run one of the user's Shortcuts, optionally with text as its input.
+    RunShortcut { name: String, input: Option<String> },
+    /// Operate an app on screen to do a task no other tool covers (needs `agent-desktop`).
+    UseApp { app: String, task: String },
+    /// Click one named control in an app: the irreversible step a [`Action::UseApp`] run stopped before.
+    PressButton { app: String, role: String, name: String },
 }
 
 /// How careful Alfred must be before running an action.
@@ -48,12 +54,17 @@ impl Action {
             Action::WebSearch { .. } => "web_search",
             Action::OpenUrl { .. } => "open_url",
             Action::GetTime => "get_time",
+            Action::RunShortcut { .. } => "run_shortcut",
+            Action::UseApp { .. } => "use_app",
+            Action::PressButton { .. } => "press_button",
         }
     }
 
+    /// Shortcuts drive real devices and a small model can pick the wrong one, so running one confirms
+    /// unless the user named it (the agent decides that); a press is the irreversible click itself.
     pub fn risk(&self) -> Risk {
         match self {
-            Action::QuitApp { .. } => Risk::Confirm,
+            Action::QuitApp { .. } | Action::RunShortcut { .. } | Action::PressButton { .. } => Risk::Confirm,
             _ => Risk::Safe,
         }
     }
@@ -68,6 +79,9 @@ impl Action {
             Action::WebSearch { query, .. } => format!("Searching “{}”", clip(query, 28)),
             Action::OpenUrl { url, .. } => format!("Opening {}", host_of(url)),
             Action::GetTime => "Checking the time".into(),
+            Action::RunShortcut { name, .. } => format!("Running “{}”", clip(name, 32)),
+            Action::UseApp { app, .. } => format!("Using {app}"),
+            Action::PressButton { app, name, .. } => format!("Clicking “{}” in {app}", clip(name, 24)),
         }
     }
 
@@ -81,6 +95,9 @@ impl Action {
             Action::WebSearch { query, .. } => format!("Search “{}”", clip(query, 28)),
             Action::OpenUrl { url, .. } => format!("Open {}", host_of(url)),
             Action::GetTime => "Tell the time".into(),
+            Action::RunShortcut { name, .. } => format!("Run the shortcut “{}”", clip(name, 32)),
+            Action::UseApp { app, task } => format!("In {app}: {}", clip(task, 40)),
+            Action::PressButton { app, name, .. } => format!("Click “{}” in {app}", clip(name, 32)),
         }
     }
 
@@ -88,6 +105,8 @@ impl Action {
     pub fn confirm_question(&self) -> String {
         match self {
             Action::QuitApp { name } => format!("Shall I quit {name}?"),
+            Action::RunShortcut { name, .. } => format!("Shall I run the shortcut “{name}”?"),
+            Action::PressButton { app, name, .. } => format!("Shall I click “{name}” in {app}?"),
             other => format!("Shall I go ahead: {}?", other.progress_label().to_lowercase()),
         }
     }
@@ -105,6 +124,9 @@ impl Action {
             Action::WebSearch { query, .. } => format!("Here are the results for “{query}”."),
             Action::OpenUrl { url, .. } => format!("I've opened {}.", host_of(url)),
             Action::GetTime => "Here is the time.".into(),
+            Action::RunShortcut { name, .. } => format!("I've run “{name}”."),
+            Action::UseApp { app, .. } => format!("Done in {app}."),
+            Action::PressButton { app, name, .. } => format!("I've clicked “{name}” in {app}."),
         }
     }
 }
@@ -139,12 +161,30 @@ fn clip(s: &str, max: usize) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub summary: String,
+    /// A risky step the action stopped before (an on-screen run reaching a Send button). The agent asks
+    /// about it like any confirm-level action.
+    pub follow_up: Option<Action>,
 }
 
 impl Outcome {
     pub fn new(summary: impl Into<String>) -> Self {
-        Self { summary: summary.into() }
+        Self { summary: summary.into(), follow_up: None }
     }
+
+    pub fn with_follow_up(mut self, action: Action) -> Self {
+        self.follow_up = Some(action);
+        self
+    }
+}
+
+/// Operating apps on screen. `alfred-hands` implements it with `agent-desktop`; the executor delegates
+/// [`Action::UseApp`] and [`Action::PressButton`] to it.
+pub trait Hands: Send + Sync {
+    /// Work towards `task` in `app`, one observed step at a time. Stops before irreversible clicks and
+    /// returns them as the outcome's follow-up.
+    fn use_app(&self, app: &str, task: &str) -> Result<Outcome, String>;
+    /// Find the control by role and name in `app` and click it.
+    fn press(&self, app: &str, role: &str, name: &str) -> Result<Outcome, String>;
 }
 
 /// Performs actions. `alfred-mac` provides the real one; [`DryRun`] records instead.

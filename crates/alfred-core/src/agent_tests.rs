@@ -221,3 +221,75 @@ fn yes_and_no_words() {
     assert_eq!(yes_or_no("Alfred, no thanks"), Some(false));
     assert_eq!(yes_or_no("open notes"), None);
 }
+
+fn with_shortcuts(replies: Vec<Result<crate::llm::ModelReply, LlmError>>) -> Agent {
+    agent_with(replies)
+        .with_catalog(crate::catalog::Catalog { shortcuts: vec!["démarre la musique".into(), "Bonjour".into()], hands: true })
+}
+
+#[test]
+fn a_shortcut_the_user_names_runs_at_once() {
+    let mut a = with_shortcuts(vec![]);
+    let d = DryRun::new();
+    let t = a.handle("run Bonjour", &d, &mut quiet());
+    assert_eq!(t.reply, "I've run “Bonjour”.");
+    assert_eq!(d.actions(), vec![Action::RunShortcut { name: "Bonjour".into(), input: None }]);
+}
+
+#[test]
+fn a_shortcut_the_model_picks_asks_first_unless_trusted() {
+    let pick = || Scripted::calls("run_shortcut", json!({"shortcut": "demarre la musique"}));
+    let mut a = with_shortcuts(vec![pick()]);
+    let d = DryRun::new();
+    let t = a.handle("could you start the vacuum", &d, &mut quiet());
+    assert_eq!(t.reply, "Shall I run the shortcut “démarre la musique”?");
+    assert!(d.actions().is_empty());
+    assert_eq!(a.handle("yes", &d, &mut quiet()).reply, "I've run “démarre la musique”.");
+
+    let mut a = with_shortcuts(vec![pick()]).with_trusted_shortcuts(&["Démarre La Musique".into()]);
+    let d = DryRun::new();
+    a.handle("could you start the vacuum", &d, &mut quiet());
+    assert_eq!(d.actions().len(), 1, "trusted shortcuts run without asking");
+}
+
+/// An executor whose on-screen run stops before a Send button.
+struct StopsAtSend(DryRun);
+
+impl Executor for StopsAtSend {
+    fn execute(&self, action: &Action) -> Result<crate::action::Outcome, String> {
+        let o = self.0.execute(action)?;
+        Ok(match action {
+            Action::UseApp { app, .. } => crate::action::Outcome::new("I've written the reply in Mail.")
+                .with_follow_up(Action::PressButton { app: app.clone(), role: "button".into(), name: "Send".into() }),
+            _ => o,
+        })
+    }
+}
+
+#[test]
+fn an_on_screen_run_asks_before_the_irreversible_click() {
+    let mut a =
+        with_shortcuts(vec![Scripted::calls("use_app", json!({"app": "Mail", "text": "reply to the last email saying I'll be there"}))]);
+    let exec = StopsAtSend(DryRun::new());
+    let t = a.handle("answer my last mail that I'll be there", &exec, &mut quiet());
+    assert_eq!(t.reply, "I've written the reply in Mail. Shall I click “Send” in Mail?");
+    assert_eq!(t.pending, Some(Action::PressButton { app: "Mail".into(), role: "button".into(), name: "Send".into() }));
+    assert_eq!(exec.0.actions().len(), 1, "only the on-screen run so far");
+    let t = a.handle("no", &exec, &mut quiet());
+    assert_eq!(t.reply, "Very well, I'll leave it.");
+    assert_eq!(exec.0.actions().len(), 1, "Send was never clicked");
+}
+
+#[test]
+fn shortcut_input_is_kept_only_when_the_user_gave_some() {
+    let call = |input: &str| Scripted::calls("run_shortcut", json!({"shortcut": "Bonjour", "text": input}));
+    let mut a = with_shortcuts(vec![call("Start vacuuming")]).with_trusted_shortcuts(&["Bonjour".into()]);
+    let d = DryRun::new();
+    a.handle("give my greeting shortcut a go", &d, &mut quiet());
+    assert_eq!(d.actions(), vec![Action::RunShortcut { name: "Bonjour".into(), input: None }]);
+
+    let mut a = with_shortcuts(vec![call("good morning")]).with_trusted_shortcuts(&["Bonjour".into()]);
+    let d = DryRun::new();
+    a.handle("greet with: good morning", &d, &mut quiet());
+    assert_eq!(d.actions(), vec![Action::RunShortcut { name: "Bonjour".into(), input: Some("good morning".into()) }]);
+}
