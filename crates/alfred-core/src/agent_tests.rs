@@ -166,6 +166,7 @@ fn events_announce_progress() {
     a.handle("search google for rune", &DryRun::new(), &mut |e| {
         log.push(match e {
             Event::Thinking => "thinking".to_string(),
+            Event::Reasoning => "reasoning".to_string(),
             Event::Acting(x) => format!("acting {}", x.tool_name()),
             Event::Acted(d) => format!("acted {}", d.result.is_ok()),
         })
@@ -376,4 +377,112 @@ fn the_history_fails_safe_when_outside_text_cannot_be_found() {
     let kept = remembered(&turn);
     assert!(!kept.contains("Unlock"), "{kept}");
     assert_eq!(kept, "Done in Mail. I asked whether to click a button in Mail.");
+}
+
+fn reasoned(model: &Scripted) -> usize {
+    model.schemas.lock().unwrap().iter().filter(|s| **s == json!("reason")).count()
+}
+
+#[test]
+fn a_question_the_model_flags_as_hard_is_thought_through() {
+    let model = std::sync::Arc::new(Scripted::new([
+        Scripted::calls("chat", json!({"reply": "About 400.", "hard": true})),
+        Scripted::says("17 by 23 is 391."),
+    ]));
+    let mut a = Agent::new(Some(Box::new(model.clone())));
+    let mut events = Vec::new();
+    let t = a.handle("what's 17 by 23?", &DryRun::new(), &mut |e| events.push(matches!(e, Event::Reasoning)));
+    assert_eq!(t.reply, "17 by 23 is 391.", "the thought-through answer wins");
+    assert_eq!(reasoned(&model), 1);
+    assert!(events.contains(&true), "the UI hears that Alfred is thinking it through");
+    let seen = model.seen.lock().unwrap();
+    assert!(seen[1][0].content.contains("Think the question through"), "{:?}", seen[1][0]);
+}
+
+#[test]
+fn easy_questions_and_actions_never_think() {
+    let model = std::sync::Arc::new(Scripted::new([
+        Scripted::says("Good evening."),
+        Scripted::calls("create_note", json!({"text": "compare the two offers step by step"})),
+    ]));
+    let mut a = Agent::new(Some(Box::new(model.clone())));
+    assert_eq!(a.handle("good evening", &DryRun::new(), &mut quiet()).reply, "Good evening.");
+    a.handle("jot this down: compare the two offers step by step", &DryRun::new(), &mut quiet());
+    assert_eq!(reasoned(&model), 0, "a greeting is quick, and a note is an action even when its words sound hard");
+}
+
+#[test]
+fn plain_signs_of_a_hard_question_think_even_unflagged() {
+    let model = std::sync::Arc::new(Scripted::new([Scripted::says("Roughly 30."), Scripted::says("It comes to 30 euros.")]));
+    let mut a = Agent::new(Some(Box::new(model.clone())));
+    let t = a.handle("a 40 euro shirt with 25% off, what do I pay?", &DryRun::new(), &mut quiet());
+    assert_eq!(t.reply, "It comes to 30 euros.");
+    assert_eq!(reasoned(&model), 1);
+}
+
+#[test]
+fn thinking_can_be_turned_off_or_on_for_everything() {
+    let hard = || Scripted::calls("chat", json!({"reply": "391.", "hard": true}));
+    let model = std::sync::Arc::new(Scripted::new([hard()]));
+    let mut a = Agent::new(Some(Box::new(model.clone()))).with_thinking(Thinking::Never);
+    assert_eq!(a.handle("what's 17 by 23?", &DryRun::new(), &mut quiet()).reply, "391.");
+    assert_eq!(reasoned(&model), 0);
+
+    let model = std::sync::Arc::new(Scripted::new([Scripted::says("Hello."), Scripted::says("Hello there, sir.")]));
+    let mut a = Agent::new(Some(Box::new(model.clone()))).with_thinking(Thinking::Always);
+    assert_eq!(a.handle("hello", &DryRun::new(), &mut quiet()).reply, "Hello there, sir.");
+    assert_eq!(reasoned(&model), 1);
+}
+
+#[test]
+fn thinking_that_comes_back_empty_keeps_the_quick_answer() {
+    let model = std::sync::Arc::new(Scripted::new([Scripted::calls("chat", json!({"reply": "391.", "hard": true})), Scripted::says("")]));
+    let mut a = Agent::new(Some(Box::new(model.clone())));
+    assert_eq!(a.handle("what's 17 by 23?", &DryRun::new(), &mut quiet()).reply, "391.");
+}
+
+#[test]
+fn plain_signs_of_reasoning_are_narrow() {
+    for hard in [
+        "what is 17 * 23",
+        "how many minutes are there in 3.5 hours",
+        "compare the iPhone and the Pixel",
+        "what are the pros and cons of renting",
+        "plan a day in Lyon for me",
+        "explain it step by step",
+        "combien font 12 fois 15",
+        "réfléchis bien : quel trajet est le plus court ?",
+    ] {
+        assert!(needs_reasoning(hard), "{hard}");
+    }
+    for easy in ["hello", "what's the capital of Italy", "why is the sky blue", "tell me a joke", "who wrote Hamlet in 1600"] {
+        assert!(!needs_reasoning(easy), "{easy}");
+    }
+}
+
+#[test]
+fn a_model_that_cannot_follow_a_schema_switches_to_its_own_tool_calls() {
+    let refusal = || Err(LlmError::Http { status: 501, message: "structured output is unavailable".into() });
+    let model = std::sync::Arc::new(Scripted::new([refusal(), Scripted::calls("open_app", json!({"name": "Calendar"}))]));
+    let mut a = Agent::new(Some(Box::new(model.clone())));
+    let d = DryRun::new();
+    a.handle("bring my week up on screen", &d, &mut quiet());
+    assert_eq!(d.actions(), vec![Action::OpenApp { name: "Calendar".into() }]);
+    assert_eq!(a.mode, ToolMode::Native, "and it stays native for the rest of the session");
+    let schemas = model.schemas.lock().unwrap();
+    assert!(schemas[1].is_array(), "the retry offered the tools natively: {:?}", schemas[1]);
+}
+
+#[test]
+fn a_native_model_that_describes_instead_of_acting_is_nudged_once() {
+    let model = std::sync::Arc::new(Scripted::new([
+        Scripted::says("I will open the Music application for you."),
+        Scripted::calls("open_app", json!({"name": "Music"})),
+    ]));
+    let mut a = Agent::new(Some(Box::new(model.clone()))).with_tool_mode(ToolMode::Native);
+    let d = DryRun::new();
+    a.handle("I'd like to listen to some music", &d, &mut quiet());
+    assert_eq!(d.actions(), vec![Action::OpenApp { name: "Music".into() }]);
+    let seen = model.seen.lock().unwrap();
+    assert!(seen[1].last().unwrap().content.contains("call the right tool"), "{:?}", seen[1].last());
 }

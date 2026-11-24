@@ -121,6 +121,7 @@ pub fn spawn(config: Config, me: AppHandle<Ui>) -> Links {
 fn progress(ui: &AppHandle<Ui>, attempt: u64) -> impl FnMut(Event) + '_ {
     move |e| match e {
         Event::Thinking => ui.update(move |s, _| s.on_thinking(attempt)),
+        Event::Reasoning => ui.update(move |s, _| s.on_reasoning(attempt)),
         Event::Acting(a) => {
             let label = a.progress_label();
             ui.update(move |s, _| s.on_acting(attempt, label));

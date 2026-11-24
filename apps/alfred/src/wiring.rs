@@ -30,6 +30,7 @@ pub fn build(cfg: &Config) -> (Agent, MacExecutor) {
     let agent = Agent::new(Some(llm::from_config(&cfg.llm)))
         .with_history_turns(cfg.llm.history_turns)
         .with_tool_mode(cfg.llm.tool_mode)
+        .with_thinking(cfg.llm.thinking)
         .with_catalog(catalog)
         .with_trusted_shortcuts(&cfg.shortcuts.trusted);
     (agent, exec)

@@ -9,18 +9,37 @@ use serde_json::Value;
 
 use crate::action::{Action, Executor, Risk};
 use crate::catalog::{Catalog, fold};
-use crate::config::ToolMode;
-use crate::llm::{ChatMessage, ChatModel, ModelReply, Role, ToolCall};
+use crate::config::{Thinking, ToolMode};
+use crate::llm::{ChatMessage, ChatModel, LlmError, ModelReply, Role, ToolCall};
 use crate::router::{self, Route, Slot};
 use crate::tools::{action_from_call_in, decision_guide_for, decision_schema_for, decision_to_call, tools_json_for};
 
 /// Alfred's persona and rules, for the model.
 pub const SYSTEM_PROMPT: &str = "You are Alfred, a discreet, warm and efficient butler-style assistant living on the user's Mac. \
-You can act through tools: open or quit apps, save notes in Apple Notes, add reminders, search the web, open links, tell the time, \
-read the newest email and open a reply to it as a draft. \
-When the user asks for something a tool can do, call that tool with complete plain-text arguments. \
-Otherwise answer in one or two short spoken sentences, with no markdown, lists or emoji. \
-Never claim to have done something you did not do with a tool, and never invent facts you cannot know.";
+You act through tools: open or quit any app (Calendar, Music, Mail, Terminal, Notes, Safari and others), save notes in Apple Notes, \
+add reminders, search the web, open links, tell the time and date, read the newest email (read_mail) and answer it with a draft \
+(reply_mail). When a request matches a tool, call the tool at once: never describe what you would do, never ask which app when one \
+is obvious, and never say you cannot open an app. Otherwise answer in one or two short spoken sentences, with no markdown, lists or \
+emoji. Never claim to have done something you did not do with a tool, and never invent facts you cannot know.";
+
+/// The native-mode prompt for this Mac: [`SYSTEM_PROMPT`] plus the optional tools it offers.
+fn native_prompt(catalog: &Catalog) -> String {
+    let mut p = SYSTEM_PROMPT.to_string();
+    if !catalog.shortcuts.is_empty() {
+        p.push_str(" The user's Shortcuts run with run_shortcut; pick the one whose name fits the request.");
+    }
+    if catalog.hands {
+        p.push_str(" For anything inside another app with no tool of its own (Slack, WhatsApp, archiving an email), use use_app.");
+    }
+    p
+}
+
+/// For an answer that needs reasoning: the model thinks first (its thoughts are never shown), then speaks.
+const REASONING_PROMPT: &str = "You are Alfred, a discreet, warm and efficient butler-style assistant living on the user's Mac. \
+Think the question through carefully, check your result, then answer. \
+The answer is spoken aloud: give the result first, in at most four short sentences, with no markdown, lists or emoji, and \
+numbers written as digits (391, 6:40, 14 months). \
+Never invent facts you cannot know.";
 
 /// Where a turn's answer came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +85,8 @@ impl Turn {
 #[derive(Debug)]
 pub enum Event<'a> {
     Thinking,
+    /// The question needs reasoning: the model is thinking it through before it answers.
+    Reasoning,
     Acting(&'a Action),
     Acted(&'a Done),
 }
@@ -83,6 +104,7 @@ pub struct Agent {
     catalog: Catalog,
     /// Shortcut names (folded) that may run without asking, even when the model chose them.
     trusted: Vec<String>,
+    thinking: Thinking,
 }
 
 impl Agent {
@@ -96,6 +118,23 @@ impl Agent {
             mode: ToolMode::Structured,
             catalog: Catalog::default(),
             trusted: Vec::new(),
+            thinking: Thinking::Auto,
+        }
+    }
+
+    /// When the model thinks before answering in words.
+    pub fn with_thinking(mut self, thinking: Thinking) -> Self {
+        self.thinking = thinking;
+        self
+    }
+
+    /// Whether an answer in words to `text` should be thought through: the model flagged it as hard while
+    /// deciding, or the words plainly ask for reasoning.
+    fn should_think(&self, text: &str, flagged: bool) -> bool {
+        match self.thinking {
+            Thinking::Never => false,
+            Thinking::Always => true,
+            Thinking::Auto => flagged || needs_reasoning(text),
         }
     }
 
@@ -233,7 +272,7 @@ impl Agent {
             ToolMode::Structured => {
                 format!("You are Alfred, a warm, discreet assistant on the user's Mac. {}", decision_guide_for(&self.catalog))
             }
-            ToolMode::Native => SYSTEM_PROMPT.to_string(),
+            ToolMode::Native => native_prompt(&self.catalog),
         };
         let mut messages = vec![ChatMessage::new(Role::System, system)];
         for (user, alfred) in &self.history {
@@ -243,25 +282,57 @@ impl Agent {
         messages.push(ChatMessage::new(Role::User, text));
         let tools: Value = tools_json_for(&self.catalog);
         let schema: Value = decision_schema_for(&self.catalog);
+        let mut no_schema = false;
         for round in 0..MAX_MODEL_ROUNDS {
+            let mut flagged = false;
             let answer = match self.mode {
                 ToolMode::Native => model.chat(&messages, &tools),
                 ToolMode::Structured => model.chat_json(&messages, &schema).map(|d| match decision_to_call(&d) {
                     Some((name, arguments)) => {
                         ModelReply { content: String::new(), tool_calls: vec![ToolCall { id: None, name, arguments }] }
                     }
-                    None => ModelReply {
-                        content: d.get("reply").and_then(Value::as_str).unwrap_or_default().trim().to_string(),
-                        tool_calls: Vec::new(),
-                    },
+                    None => {
+                        flagged = d.get("hard").and_then(Value::as_bool).unwrap_or(false);
+                        ModelReply {
+                            content: d.get("reply").and_then(Value::as_str).unwrap_or_default().trim().to_string(),
+                            tool_calls: Vec::new(),
+                        }
+                    }
                 }),
             };
             let reply = match answer {
                 Ok(r) => r,
+                Err(e) if self.mode == ToolMode::Structured && cannot_follow_schema(&e) => {
+                    no_schema = true;
+                    break;
+                }
                 Err(e) => return Turn::say(e.to_string(), Source::Error),
             };
+            // Native tool calling: a reply that describes or claims an action instead of calling the tool
+            // ("I will open the Music app", "I have added a reminder") gets one firm nudge.
+            if reply.tool_calls.is_empty()
+                && self.mode == ToolMode::Native
+                && round + 1 < MAX_MODEL_ROUNDS
+                && describes_an_action(&reply.content)
+            {
+                messages.push(ChatMessage::new(Role::Assistant, reply.content));
+                messages.push(ChatMessage::new(Role::User, "Do not describe it or ask: call the right tool now."));
+                continue;
+            }
             if reply.tool_calls.is_empty() {
                 let mut words = reply.content;
+                // A hard question: think it through, and answer from that (the quick answer stays as the
+                // fallback when thinking runs out of room or fails).
+                if self.should_think(text, flagged) {
+                    on(Event::Reasoning);
+                    let mut deep = messages.clone();
+                    deep[0] = ChatMessage::new(Role::System, REASONING_PROMPT);
+                    if let Ok(r) = model.reason(&deep)
+                        && !r.content.trim().is_empty()
+                    {
+                        words = r.content;
+                    }
+                }
                 if words.trim().is_empty() && self.mode == ToolMode::Structured {
                     // The model chose to talk but left the reply empty: ask it once more, free-form.
                     let mut plain = messages.clone();
@@ -308,6 +379,12 @@ impl Agent {
                     messages.push(ChatMessage::new(Role::User, format!("That didn't work: {why} Decide again with the fields filled in.")));
                 }
             }
+        }
+        if no_schema {
+            // Ollama's MLX builds (gemma4 on Apple silicon) can't constrain output to a schema, but they call
+            // tools well: use the model's own tool calling from now on.
+            self.mode = ToolMode::Native;
+            return self.ask_model(text, exec, on);
         }
         Turn::say("I'm afraid I couldn't work out how to do that.", Source::Error)
     }
@@ -394,6 +471,94 @@ fn trust_only_what_was_said(action: Action, said: &str) -> Action {
         Action::DraftReply { from: Some(who), text } if !named(&who) => Action::DraftReply { from: None, text },
         other => other,
     }
+}
+
+/// A reply that talks about doing something a tool does, instead of calling the tool.
+fn describes_an_action(reply: &str) -> bool {
+    let r = reply.to_lowercase();
+    const SAYS: &[&str] = &[
+        "i will open",
+        "i'll open",
+        "i can open",
+        "i have opened",
+        "i've opened",
+        "i will add",
+        "i'll add",
+        "i can add",
+        "i have added",
+        "i've added",
+        "i will set",
+        "i'll set",
+        "i can set",
+        "i have set",
+        "i've set",
+        "i will search",
+        "i'll search",
+        "i can search",
+        "i have saved",
+        "i've saved",
+        "i will save",
+        "i'll save",
+        "i can save",
+        "shall i open",
+        "should i open",
+        "shall i set",
+        "shall i add",
+        "i cannot open",
+        "i can't open",
+        "i am unable to open",
+    ];
+    SAYS.iter().any(|s| r.contains(s))
+}
+
+/// The server can't decode under a schema for this model (Ollama answers 501 for its MLX builds).
+fn cannot_follow_schema(e: &LlmError) -> bool {
+    matches!(e, LlmError::Http { status: 501, message } if message.contains("structured output"))
+}
+
+/// Plain signs that a question needs reasoning: a sum with numbers, a comparison, a plan, a puzzle, an
+/// explicit "think it through", or a long many-part question. The model's own flag covers the rest
+/// ("why does ice float?"), so this list stays narrow: a wrong yes only costs a few seconds.
+pub fn needs_reasoning(text: &str) -> bool {
+    let t = format!(" {} ", text.to_lowercase());
+    let has_digit = t.chars().any(|c| c.is_ascii_digit());
+    const SUMS: &[&str] = &[
+        "+", " - ", "*", "×", "÷", "/", "%", "^", " plus ", " minus ", " times ", "divided", "percent", "multiply", "sum of", "average",
+        "how many", "how much", "how long", "combien", " fois ", "divisé", "pourcent", "moyenne",
+    ];
+    const ASKS: &[&str] = &[
+        "step by step",
+        "think it through",
+        "think carefully",
+        "think hard",
+        "take your time",
+        "in detail",
+        "compare",
+        "comparison",
+        "difference between",
+        "pros and cons",
+        " vs ",
+        " versus ",
+        "which is better",
+        "should i ",
+        "plan ",
+        "itinerary",
+        "schedule",
+        "riddle",
+        "puzzle",
+        "prove ",
+        "étape par étape",
+        "réfléchis",
+        "en détail",
+        "différence entre",
+        "avantages et inconvénients",
+        "lequel est mieux",
+        "laquelle est mieux",
+        "dois-je",
+        "planifie",
+        "énigme",
+    ];
+    (has_digit && SUMS.iter().any(|s| t.contains(s))) || ASKS.iter().any(|s| t.contains(s)) || text.split_whitespace().count() > 35
 }
 
 fn mentions_delay(said: &str) -> bool {

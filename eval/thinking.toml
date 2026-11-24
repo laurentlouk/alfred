@@ -1,0 +1,70 @@
+# Questions answered in words, to measure thinking on demand:
+#   alfred eval --model eval/thinking.toml
+# `says` lists accepted answers (one must appear); `thinks` says whether the model should think it through
+# first. Hard questions must be right and thought through; easy ones must be right and quick.
+
+# --- hard: a calculation, a plan, a trick -------------------------------------------------------------
+[[case]]
+text = "What is 17 times 23?"
+tool = "chat"
+says = ["391"]
+thinks = true
+
+[[case]]
+text = "I have three meetings of 45 minutes and one of 30 minutes. How long is that in total?"
+tool = "chat"
+says = ["2 hours and 45", "2 hours 45", "two hours and forty-five", "165", "2h45", "2 h 45"]
+thinks = true
+
+[[case]]
+text = "A shirt costs 40 euros and it's 25% off. What do I pay?"
+tool = "chat"
+says = ["30"]
+thinks = true
+
+[[case]]
+text = "My train leaves at 7:30 and the walk to the station takes 50 minutes. When should I leave home?"
+tool = "chat"
+says = ["6:40", "6.40", "twenty to seven", "6h40"]
+thinks = true
+
+[[case]]
+text = "Which is heavier: a kilo of feathers or a kilo of steel? Think it through."
+tool = "chat"
+says = ["same", "neither", "equal", "both weigh"]
+thinks = true
+
+[[case]]
+text = "Combien font 12 fois 15 ?"
+tool = "chat"
+says = ["180"]
+thinks = true
+
+[[case]]
+text = "If I save 150 euros a month, how many months until I have 2,000 euros?"
+tool = "chat"
+says = ["14"]
+thinks = true
+
+# --- easy: answer at once ------------------------------------------------------------------------------
+[[case]]
+text = "hello there"
+tool = "chat"
+thinks = false
+
+[[case]]
+text = "what's the capital of Italy?"
+tool = "chat"
+says = ["Rome"]
+thinks = false
+
+[[case]]
+text = "tell me a short joke"
+tool = "chat"
+thinks = false
+
+[[case]]
+text = "who wrote Romeo and Juliet?"
+tool = "chat"
+says = ["Shakespeare"]
+thinks = false

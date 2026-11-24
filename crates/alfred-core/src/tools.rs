@@ -174,6 +174,7 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
             "minutes": { "type": "integer" },
             "from": { "type": "string", "maxLength": 100 },
             "reply": { "type": "string", "maxLength": 600 },
+            "hard": { "type": "boolean" },
         },
         "required": ["action"],
     });
@@ -209,7 +210,7 @@ open_url: open a website (field url).
 read_mail: the user asks about their email or inbox (field from only if they name a sender).
 reply_mail: answer the newest email (field text: what the reply says; field from only if they name a sender).
 get_time: the user asks the time, the date or the day.
-chat: anything else; answer in one or two short sentences in field reply.";
+chat: anything else; answer in one or two short sentences in field reply, and set hard to true when a good answer needs reasoning (a calculation, logic, a plan, a comparison, or explaining how or why).";
 
 /// A structured decision as a tool call, or `None` for "chat".
 pub fn decision_to_call(decision: &Value) -> Option<(String, Value)> {
@@ -221,6 +222,7 @@ pub fn decision_to_call(decision: &Value) -> Option<(String, Value)> {
     if let Some(m) = args.as_object_mut() {
         m.remove("action");
         m.remove("reply");
+        m.remove("hard");
     }
     Some((action, args))
 }

@@ -96,7 +96,12 @@ pub trait ChatModel: Send {
     fn chat_json(&self, _messages: &[ChatMessage], _schema: &Value) -> Result<Value, LlmError> {
         Err(LlmError::BadReply("this model server doesn't support structured output; set tool_mode = \"native\"".into()))
     }
-    /// "qwen3:0.6b via Ollama", for logs and the UI footer.
+    /// An answer in words with the model's thinking on, for a question that needs reasoning. Only the
+    /// answer comes back, never the thoughts. A model that can't think answers directly.
+    fn reason(&self, messages: &[ChatMessage]) -> Result<ModelReply, LlmError> {
+        self.chat(messages, &Value::Array(Vec::new()))
+    }
+    /// "gemma4:e4b via Ollama", for logs and the UI footer.
     fn describe(&self) -> String;
 }
 
@@ -110,6 +115,10 @@ impl<T: ChatModel + Sync> ChatModel for std::sync::Arc<T> {
         (**self).chat_json(messages, schema)
     }
 
+    fn reason(&self, messages: &[ChatMessage]) -> Result<ModelReply, LlmError> {
+        (**self).reason(messages)
+    }
+
     fn describe(&self) -> String {
         (**self).describe()
     }
@@ -119,7 +128,10 @@ impl<T: ChatModel + Sync> ChatModel for std::sync::Arc<T> {
 pub fn from_config(cfg: &LlmConfig) -> Box<dyn ChatModel> {
     match cfg.provider {
         Provider::Ollama => Box::new(
-            Ollama::new(&cfg.base_url, &cfg.model, cfg.timeout_secs).with_context(cfg.context_tokens).with_max_tokens(cfg.max_reply_tokens),
+            Ollama::new(&cfg.base_url, &cfg.model, cfg.timeout_secs)
+                .with_context(cfg.context_tokens)
+                .with_max_tokens(cfg.max_reply_tokens)
+                .with_think_tokens(cfg.think_tokens),
         ),
         Provider::OpenAi => Box::new(OpenAiCompat::new(&cfg.base_url, &cfg.model, cfg.api_key(), cfg.timeout_secs)),
     }
@@ -188,6 +200,9 @@ pub struct Ollama {
     context: u32,
     /// The most tokens one reply may use.
     max_tokens: u32,
+    /// The most tokens a thinking answer may use, thoughts included.
+    think_tokens: u32,
+    timeout_secs: u64,
 }
 
 impl Ollama {
@@ -199,7 +214,14 @@ impl Ollama {
             send_think: Mutex::new(true),
             context: 8192,
             max_tokens: MAX_REPLY_TOKENS,
+            think_tokens: 2048,
+            timeout_secs,
         }
+    }
+
+    pub fn with_think_tokens(mut self, tokens: u32) -> Self {
+        self.think_tokens = tokens.clamp(256, 16_384);
+        self
     }
 
     pub fn with_max_tokens(mut self, tokens: u32) -> Self {
@@ -260,26 +282,46 @@ impl ChatModel for Ollama {
         json_object(v["message"]["content"].as_str().unwrap_or_default())
     }
 
+    /// Thinking on, with room for the thoughts: a larger token budget and a longer wait. Ollama returns the
+    /// thoughts apart (`message.thinking`), so only the answer is kept.
+    fn reason(&self, messages: &[ChatMessage]) -> Result<ModelReply, LlmError> {
+        let body = json!({
+            "model": self.model,
+            "messages": messages.iter().map(Self::message_json).collect::<Vec<_>>(),
+            "stream": false,
+            "keep_alive": "30m",
+            "options": { "temperature": 0.3, "num_ctx": self.context, "num_predict": self.think_tokens },
+        });
+        let patient = agent(self.timeout_secs.max(180));
+        self.send_on(&patient, body, true).map(|v| Self::reply_from(&v))
+    }
+
     fn describe(&self) -> String {
         format!("{} via Ollama", self.model)
     }
 }
 
 impl Ollama {
-    /// POST to `/api/chat`, dropping `think` for models that refuse it, and map error statuses.
-    fn send(&self, mut body: Value) -> Result<Value, LlmError> {
+    /// POST to `/api/chat` with thinking off (decisions and quick answers).
+    fn send(&self, body: Value) -> Result<Value, LlmError> {
+        self.send_on(&self.agent, body, false)
+    }
+
+    /// POST to `/api/chat` with `think` set as asked, dropping it for models that refuse it, and map error
+    /// statuses.
+    fn send_on(&self, agent: &ureq::Agent, mut body: Value, thinking: bool) -> Result<Value, LlmError> {
         let url = format!("{}/api/chat", self.base);
         let think = self.send_think.lock().map(|g| *g).unwrap_or(false);
         if think {
-            body["think"] = json!(false);
+            body["think"] = json!(thinking);
         }
-        let (mut status, mut v) = post(&self.agent, &url, &self.base, None, &body)?;
+        let (mut status, mut v) = post(agent, &url, &self.base, None, &body)?;
         if status == 400 && think && error_message(&v).contains("think") {
             if let Ok(mut g) = self.send_think.lock() {
                 *g = false;
             }
             body.as_object_mut().map(|o| o.remove("think"));
-            (status, v) = post(&self.agent, &url, &self.base, None, &body)?;
+            (status, v) = post(agent, &url, &self.base, None, &body)?;
         }
         if status == 404 {
             return Err(LlmError::ModelMissing { model: self.model.clone() });
@@ -292,7 +334,7 @@ impl Ollama {
 
     fn reply_from(v: &Value) -> ModelReply {
         let msg = &v["message"];
-        let tool_calls = msg["tool_calls"]
+        let tool_calls: Vec<ToolCall> = msg["tool_calls"]
             .as_array()
             .map(|calls| {
                 calls
@@ -308,8 +350,53 @@ impl Ollama {
                     .collect()
             })
             .unwrap_or_default();
-        ModelReply { content: strip_think(msg["content"].as_str().unwrap_or_default()), tool_calls }
+        let content = strip_think(msg["content"].as_str().unwrap_or_default());
+        // Gemma's own call syntax sometimes reaches the content unparsed: read it here.
+        if tool_calls.is_empty()
+            && let Some(call) = gemma_call(&content)
+        {
+            return ModelReply { content: String::new(), tool_calls: vec![call] };
+        }
+        ModelReply { content, tool_calls }
     }
+}
+
+/// A tool call written in Gemma's syntax, as Ollama sometimes leaves it in the content:
+/// `open_app{name:<|"|>Calendar<|"|>}` (or with `call:` in front). Strings sit between `<|"|>` marks;
+/// numbers and booleans are bare.
+pub fn gemma_call(content: &str) -> Option<ToolCall> {
+    const Q: &str = "<|\"|>";
+    let c = content.trim().trim_start_matches("<|tool_call>").trim_end_matches("<tool_call|>").trim();
+    let c = c.strip_prefix("call:").unwrap_or(c).trim();
+    let open = c.find('{')?;
+    let name = c[..open].trim();
+    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') || !c.ends_with('}') {
+        return None;
+    }
+    let mut rest = &c[open + 1..c.len() - 1];
+    let mut args = serde_json::Map::new();
+    loop {
+        rest = rest.trim_start_matches([',', ' ', '\n']);
+        if rest.is_empty() {
+            break;
+        }
+        let colon = rest.find(':')?;
+        let key = rest[..colon].trim().to_string();
+        rest = &rest[colon + 1..];
+        let value = if let Some(after) = rest.strip_prefix(Q) {
+            let end = after.find(Q)?;
+            let v = Value::String(after[..end].to_string());
+            rest = &after[end + Q.len()..];
+            v
+        } else {
+            let end = rest.find(',').unwrap_or(rest.len());
+            let raw = rest[..end].trim();
+            rest = &rest[end..];
+            serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+        };
+        args.insert(key, value);
+    }
+    Some(ToolCall { id: None, name: name.to_string(), arguments: Value::Object(args) })
 }
 
 // ---- OpenAI-compatible ----------------------------------------------------------------------------
@@ -416,6 +503,23 @@ impl ChatModel for OpenAiCompat {
     }
 }
 
+#[cfg(test)]
+mod gemma_tests {
+    use super::*;
+
+    #[test]
+    fn gemma_calls_left_in_the_content_are_read() {
+        let c = gemma_call("open_app{name:<|\"|>Calendar<|\"|>}").unwrap();
+        assert_eq!((c.name.as_str(), &c.arguments), ("open_app", &json!({"name": "Calendar"})));
+        let c = gemma_call("call:use_app{app:<|\"|>Slack<|\"|>,text:<|\"|>post hi, in general<|\"|>}").unwrap();
+        assert_eq!(c.arguments, json!({"app": "Slack", "text": "post hi, in general"}));
+        let c = gemma_call("create_reminder{title:<|\"|>Stretch<|\"|>,minutes:20}").unwrap();
+        assert_eq!(c.arguments, json!({"title": "Stretch", "minutes": 20}));
+        assert_eq!(gemma_call("I will open the Music application for you."), None);
+        assert_eq!(gemma_call("Sure {not a call}"), None);
+    }
+}
+
 // ---- A scripted model, for tests and offline demos ------------------------------------------------
 
 /// Answers with the replies it was given, in order, and records what it was asked.
@@ -464,6 +568,11 @@ impl ChatModel for Scripted {
             }
             None => json!({ "action": "chat", "reply": reply.content }),
         })
+    }
+
+    /// Records the call as `"reason"` in `schemas`, so tests can tell a thinking answer from a quick one.
+    fn reason(&self, messages: &[ChatMessage]) -> Result<ModelReply, LlmError> {
+        self.chat(messages, &json!("reason"))
     }
 
     fn describe(&self) -> String {

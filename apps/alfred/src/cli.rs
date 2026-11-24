@@ -78,6 +78,7 @@ fn ask(args: &[String]) -> Result<(), String> {
     let exec: &dyn Executor = if flag("--dry-run") { &dry } else { &mac };
     let mut show = |e: Event| match e {
         Event::Thinking => eprintln!("… thinking with {}", agent_label(&cfg)),
+        Event::Reasoning => eprintln!("… thinking it through"),
         Event::Acting(a) => eprintln!("→ {}", a.progress_label()),
         Event::Acted(d) => match &d.result {
             Ok(_) => eprintln!("✓ {}", d.action.tool_name()),
@@ -301,7 +302,7 @@ fn eval(args: &[String]) -> Result<(), String> {
     }
     let report = alfred_core::eval::run(&cases, || {
         let model = with_model.then(|| llm::from_config(&cfg.llm));
-        Agent::new(model).with_tool_mode(cfg.llm.tool_mode).with_catalog(catalog.clone())
+        Agent::new(model).with_tool_mode(cfg.llm.tool_mode).with_thinking(cfg.llm.thinking).with_catalog(catalog.clone())
     });
     print!("{}", report.render());
     Ok(())

@@ -22,6 +22,10 @@ toml = "0.9"
 ureq = { version = "3", features = ["json"] }
 # Rune is pre-release: pin a dev revision and patch every crate its root Cargo.toml patches, at the same rev.
 rune = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d", features = ["tooling"] }
+# Rune's GPU effect layers (the orb's liquid, glass and glow), from the same revision as Rune.
+rune-fx = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }
+# The version Rune renders with, for the compositor's texture formats.
+wgpu = { version = "~30.0.1", default-features = false }
 
 [patch.crates-io]
 winit = { git = "https://github.com/anomalyco/rune", rev = "b3503d9b2e41077aef7f4a34c2683a08ae06ed6d" }

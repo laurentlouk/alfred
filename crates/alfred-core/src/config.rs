@@ -74,6 +74,20 @@ pub enum ToolMode {
     Native,
 }
 
+/// When the model thinks before answering (a model that can't think just answers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Thinking {
+    /// Only for questions that need it: the model flags them while deciding, and clear signs in the words
+    /// (a sum, "step by step", "compare") count too. Actions such as opening an app never think.
+    #[default]
+    Auto,
+    /// Never: every answer comes from the quick decision.
+    Never,
+    /// Every answer in words thinks first.
+    Always,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
@@ -92,6 +106,10 @@ pub struct LlmConfig {
     pub max_reply_tokens: u32,
     /// Earlier turns sent back to the model for context.
     pub history_turns: usize,
+    /// When the model thinks before answering in words.
+    pub thinking: Thinking,
+    /// The most tokens a thinking answer may use, thoughts included.
+    pub think_tokens: u32,
 }
 
 impl Default for LlmConfig {
@@ -106,6 +124,8 @@ impl Default for LlmConfig {
             context_tokens: 8192,
             max_reply_tokens: 256,
             history_turns: 3,
+            thinking: Thinking::Auto,
+            think_tokens: 2048,
         }
     }
 }

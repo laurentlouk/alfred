@@ -1,6 +1,8 @@
-//! The panel: Alfred's window, summoned by a global shortcut, the Dock icon or ⌘Tab, with the orb, a
-//! text field, the conversation and the actions as chips.
+//! Alfred's window: a compact, transparent assistant that floats above other windows, with the green
+//! fluid orb, a field to type or talk, and the latest exchange. A global shortcut, the Dock icon or ⌘Tab
+//! bring it forward.
 
+mod gfx;
 pub mod orb;
 mod scenes;
 #[cfg(test)]
@@ -12,13 +14,13 @@ use std::time::Duration;
 use alfred_core::config::{self, Config};
 use alfred_core::{Action, Turn as AgentTurn};
 use rune::{
-    Align, App, AppHandle, AppSpec, DisplayTarget, Key, KeyEvent, MicPermission, OverlayPlacement, RecordFormat, Recorder, RunOptions,
-    ScreenEdge, TextEdit, Tx, WindowOptions, WindowSpec,
+    Align, App, AppHandle, AppSpec, DisplayTarget, Key, KeyEvent, MacWindowOptions, MicPermission, OverlayPlacement, RecordFormat,
+    Recorder, RunOptions, ScreenEdge, TextEdit, Tx, WindowOptions, WindowSpec,
 };
 
 use crate::workers::{self, BrainJob, Links, VoiceJob};
 
-pub const SIZE: (f32, f32) = (560.0, 640.0);
+pub const SIZE: (f32, f32) = (300.0, 480.0);
 const MAX_TURNS: usize = 3;
 /// A recording is "voice" above this meter level (0 to 1).
 const VOICE_LEVEL: f32 = 0.16;
@@ -86,6 +88,8 @@ pub struct Ui {
     had_focus: bool,
     /// The panel has the keyboard now.
     focused: bool,
+    /// The model is thinking a hard question through.
+    reasoning: bool,
     /// What was in the field when listening began: the live text follows it.
     typed: String,
     /// A live-text transcription is on its way; when the last one was asked for.
@@ -116,6 +120,7 @@ impl Ui {
             shortcut: Config::default().ui.shortcut,
             had_focus: false,
             focused: false,
+            reasoning: false,
             typed: String::new(),
             peeking: false,
             last_peek: 0.0,
@@ -145,6 +150,7 @@ impl Ui {
             Mode::Idle => "At your service.".into(),
             Mode::Listening => "Listening…".into(),
             Mode::Transcribing => "One moment…".into(),
+            Mode::Thinking if self.reasoning => "Thinking it through…".into(),
             Mode::Thinking => "Thinking…".into(),
             Mode::Speaking => "Speaking…".into(),
         }
@@ -290,7 +296,7 @@ impl Ui {
             self.hide_panel();
         } else {
             self.had_focus = false;
-            summon(&l.me);
+            summon(&l.me, false);
         }
     }
 
@@ -302,7 +308,7 @@ impl Ui {
             return false;
         }
         self.had_focus = false;
-        summon(&l.me);
+        summon(&l.me, false);
         true
     }
 
@@ -332,6 +338,15 @@ impl Ui {
     pub fn on_thinking(&mut self, attempt: u64) {
         if attempt == self.attempt {
             self.mode = Mode::Thinking;
+            self.reasoning = false;
+        }
+    }
+
+    /// A hard question: the caption says Alfred is thinking it through, which takes a few seconds more.
+    pub fn on_reasoning(&mut self, attempt: u64) {
+        if attempt == self.attempt {
+            self.mode = Mode::Thinking;
+            self.reasoning = true;
         }
     }
 
@@ -357,6 +372,7 @@ impl Ui {
         if attempt != self.attempt {
             return;
         }
+        self.reasoning = false;
         match self.turns.last_mut() {
             Some(t) if t.alfred.is_empty() => t.alfred = turn.reply.clone(),
             _ => self.turns.push(Turn { you: String::new(), alfred: turn.reply.clone(), chips: Vec::new() }),
@@ -419,13 +435,12 @@ fn join_said(typed: &str, heard: &str) -> String {
     [typed.trim(), heard.trim()].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
-/// Bring the panel up near the top of the screen the pointer is on, in front and taking the keyboard
-/// (`open` also creates the window the first time).
-fn summon(me: &AppHandle<Ui>) {
-    me.place(
-        DisplayTarget::UnderPointer,
-        OverlayPlacement::Edge { edge: ScreenEdge::Top, margin: 110.0, align: Align::Center, inset: 0.0 },
-    );
+/// Bring Alfred forward, taking the keyboard (`open` also creates the window the first time). At launch it
+/// goes to the bottom-right corner of the main display; after that it stays where the user dragged it.
+fn summon(me: &AppHandle<Ui>, place: bool) {
+    if place {
+        me.place(DisplayTarget::Primary, OverlayPlacement::Edge { edge: ScreenEdge::Bottom, margin: 24.0, align: Align::End, inset: 24.0 });
+    }
     me.open();
 }
 
@@ -497,17 +512,25 @@ fn spec(init: fn() -> Ui) -> AppSpec<Ui> {
         scenes: scenes::SCENES,
         poll: Some(poll),
         on_key: Some(on_key),
-        min_size: Some((420.0, 480.0)),
+        min_size: Some((260.0, 380.0)),
         ..AppSpec::new("Alfred", SIZE, init, view::view)
     }
 }
+
+/// AppKit's NSWindowCollectionBehavior: can join all Spaces (1 << 0), stationary in Mission Control
+/// (1 << 4), shown beside full-screen apps (1 << 8).
+const EVERY_SPACE: usize = (1 << 0) | (1 << 4) | (1 << 8);
 
 /// Flags that ask Rune for a headless render instead of the app.
 const TOOLING: &[&str] = &["--snap", "--tree", "--list-scenes", "--script", "--video", "--frames", "--strip", "--html", "--list-windows"];
 
 pub fn run(args: Vec<String>) {
     if args.iter().any(|a| TOOLING.contains(&a.as_str())) {
-        rune::run(spec(Ui::demo));
+        // Rendered as the real window is: borderless and transparent, so snapshots show what the desktop sees.
+        App::new(spec(Ui::demo))
+            .window_options(WindowOptions { borderless: true, transparent: true, ..Default::default() })
+            .compositor(gfx::Gfx::default())
+            .run();
         return;
     }
     let config = crate::cli::load_config().unwrap_or_else(|e| {
@@ -524,18 +547,24 @@ pub fn run(args: Vec<String>) {
         .keep_running()
         .global_shortcut(&shortcut, |s, _| s.toggle_visible())
         .on_reopen(|s, has_visible, _| s.on_reopen(has_visible))
-        .on_focus(|s, focused, _| s.on_focus(focused));
+        .on_focus(|s, focused, _| s.on_focus(focused))
+        .compositor(gfx::Gfx::default());
     if !args.iter().any(|a| a == "--background") {
         let first = me.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(250));
-            summon(&first);
+            summon(&first, true);
         });
     }
-    // A regular app (Dock icon, ⌘Tab) with an ordinary window drawn as a panel: a floating launcher
-    // panel never makes Alfred the active app, so switching to Alfred couldn't bring it back.
-    let window = WindowOptions { visible: false, borderless: true, transparent: true, resizable: false, ..Default::default() };
+    // A regular app (Dock icon, ⌘Tab) whose window floats above the others with nothing but its own
+    // content showing: borderless and transparent. (A launcher panel never makes Alfred the active app, so
+    // switching to Alfred couldn't bring it forward.)
+    // No system shadow: it would trace the orb and the text with a dark outline. On every Space, steady
+    // in Mission Control, and over full-screen apps, so Alfred follows you from desktop to desktop.
+    let window =
+        WindowOptions { visible: false, borderless: true, transparent: true, always_on_top: true, resizable: false, ..Default::default() };
+    let native = MacWindowOptions::default().shadow(false).collection_behavior(EVERY_SPACE);
     rune::run_windows_with_args(RunOptions { accessory: false }, Vec::<String>::new(), move |_| {
-        vec![WindowSpec::from_app("alfred", app).options(window)]
+        vec![WindowSpec::from_app("alfred", app).configured_options(window.macos(native))]
     });
 }

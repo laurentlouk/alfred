@@ -17,6 +17,8 @@ alfred-hands.workspace = true
 alfred-mac.workspace = true
 alfred-voice.workspace = true
 rune.workspace = true
+rune-fx.workspace = true
+wgpu.workspace = true
 serde_json.workspace = true
 
 [lints]
