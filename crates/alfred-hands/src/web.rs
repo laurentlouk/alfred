@@ -1099,10 +1099,6 @@ impl WebHands for BrowserHands {
         self.set_working_tab(ALFRED_TAB);
         self.url_now().ok().filter(|u| !is_blank(u))
     }
-
-    fn in_users_browser(&self) -> bool {
-        self.browser.shared()
-    }
 }
 
 #[cfg(test)]

@@ -297,10 +297,6 @@ pub trait WebHands: Send + Sync {
     fn page(&self) -> Option<String> {
         None
     }
-    /// Alfred works in the user's own browser, so a site the user asks for opens there, in Alfred's tab.
-    fn in_users_browser(&self) -> bool {
-        false
-    }
 }
 
 /// Performs actions. `alfred-mac` provides the real one; [`DryRun`] records instead.

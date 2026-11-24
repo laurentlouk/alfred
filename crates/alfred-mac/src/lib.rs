@@ -183,11 +183,10 @@ impl Executor for MacExecutor {
                 if alfred_core::normalize::url(url).as_deref() != Some(url.as_str()) {
                     return Err(format!("{url} is not a web address I can open."));
                 }
-                // Working in the user's Chrome, the site opens in Alfred's tab there, so follow-ups ("what do
-                // you see?") can look at it.
+                // The site opens in Alfred's browser, where follow-ups ("what do you see?") can look at it and
+                // the user's sign-ins there are kept. A browser the user named still gets it.
                 if browser.is_none()
                     && let Some(web) = &self.web
-                    && web.in_users_browser()
                     && let Ok(shown) = web.show(url)
                 {
                     return Ok(shown);

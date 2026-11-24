@@ -119,9 +119,11 @@ user named a page or gave steps.
   real run would. *Rejected:* window titles and page text (written by others, they could carry
   instructions); polling the frontmost app (the front-to-back order answers at the time of the request).
 - **C2. Alfred's tab is remembered.** The hands keep the last address they saw in Alfred's own tab (never
-  the user's), and, after a restart, look the tab up once. In Chrome mode, "open a site" opens it in that
-  tab, so a follow-up can look at it; in Alfred's own window mode a site still opens in the default
-  browser, and a follow-up reaches it through C3.
+  the user's), and, after a restart, look the tab up once. A site the user asks for ("open gmail.com") opens in Alfred's browser, its own window or its tab in
+  the user's Chrome, so a follow-up can look at it and sign-ins made there are kept; a browser the user
+  names ("in Safari") still gets it. (Until 2026-11-24 evening, Alfred's own window mode opened sites in
+  the default browser; the owner chose Alfred's own window over Chrome mode when Chrome's remote-debugging
+  switch kept turning itself off, so sites now open where Alfred can see them.)
 - **C3. The user's page.** `use_browser` takes `tab`: `alfred` (the default) or `yours`, which becomes
   `Action::UseTheirTab`. In Chrome mode Alfred finds the tab showing that address (`tab list`, matched by
   address, its own tab first when that is what the user is looking at), switches to it by target id and

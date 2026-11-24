@@ -918,7 +918,6 @@ fn in_the_users_chrome_a_confirmed_click_happens_only_in_alfreds_tab() {
 fn in_the_users_chrome_a_site_they_ask_for_opens_in_alfreds_tab_and_is_remembered() {
     let web = in_chrome();
     let (h, _) = answering(&web, vec![]);
-    assert!(h.in_users_browser());
     assert_eq!(h.page(), None, "nothing opened yet; the user's own page is never Alfred's");
     assert_eq!(web.log()[0], args(["tab", "alfred"]), "looked for a tab left by an earlier run");
     let looked = web.log().len();
