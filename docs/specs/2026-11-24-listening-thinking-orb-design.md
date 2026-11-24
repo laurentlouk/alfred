@@ -114,6 +114,14 @@ Alfred v1 worked, but daily use showed five gaps the owner asked to close:
     same fixture, quick answers just as fast (0.6 to 0.8 s), and 11 of 11 hard questions but 34 s each.
     Ollama serves its default tag on Apple silicon as NVFP4/MLX, without structured output, so it can't
     drive apps either; the GGUF tags (`qwen3.5:9b-q4_K_M`, `qwen3.5:35b-a3b-q4_K_M`) can.
+    *One model for deciding and for the steps (the owner's setup since that evening):*
+    `qwen3.5:35b-a3b-q4_K_M` follows a schema, and on three live Wikipedia tasks answered all three in 38
+    to 45 s where `qwen3:8b` answered one and ran out of steps on two (139 and 152 s). As the deciding
+    model it scores 92% of requests, 95% of app requests and 92% of page requests, with quick answers at
+    about 1.2 s (0.6 s for the NVFP4 build). The two 22 GB builds are never both kept loaded (Ollama
+    unloads one; alternating cost 5 to 20 s a call), so one build does both jobs, with the same
+    `context_tokens` (16384) for deciding and for the steps: a different context size makes Ollama reload
+    the model. `gemma4:e4b` still thinks hard questions through (9 to 14 s).
 11. **Models without structured output fall back to native tool calls.** Ollama's Apple-silicon Gemma
     builds (NVFP4 and MLX) answer a `format` schema with 501. The agent switches to native tool calls for
     the session, parses Gemma's own call syntax when it arrives as text, and nudges once when a reply

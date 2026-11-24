@@ -158,6 +158,25 @@ think_model = "gemma4:e4b"
 
 Ollama's Apple-silicon builds of Gemma can't do structured output; Alfred notices and uses native tool calls anyway, and `tool_mode = "native"` skips that first try. Operating apps and websites needs structured output, so keep `qwen3:8b` there (`[desktop] model`): Gemma's 8-bit build that has it finished 1 of 3 live Wikipedia tasks, against 3 of 3 for `qwen3:8b`. On a Mac with less memory, `gemma4:e4b` alone (no `think_model`) needs about 10 GB, and `qwen3:4b` (2.5 GB) is a smaller step up from the default. `qwen3.5:35b` decides a little less well than `gemma4:26b` (94% and 90% against 96% and 95%) and thinks far more slowly (34 s a question).
 
+**One model for deciding and for driving apps and pages.** Ollama's default `qwen3.5:35b` on Apple silicon can't follow a schema, but the standard build of the same model can:
+
+```bash
+ollama pull qwen3.5:35b-a3b-q4_K_M
+```
+
+```toml
+[llm]
+model = "qwen3.5:35b-a3b-q4_K_M"
+tool_mode = "native"
+context_tokens = 16384       # the same as the steps use, so Ollama never reloads the model between them
+think_model = "gemma4:e4b"
+
+[desktop]
+model = "qwen3.5:35b-a3b-q4_K_M"
+```
+
+Measured on an M1 Max with 64 GB: three live Wikipedia tasks answered in 38 to 45 s each, where `qwen3:8b` answered one and ran out of steps on the other two (139 and 152 s); 92% of requests, 95% of app requests, 11 of 11 hard questions. A quick answer takes about 1.2 s, against 0.6 s for the Apple-silicon build. Two 22 GB builds don't stay loaded together (Ollama unloads one, and loading it again takes 10 to 20 s), so use one build for both jobs.
+
 ## Reaching other apps
 
 **Mail.** "Read my last email", "who emailed me last", "anything new in my inbox?" and "lis mon dernier mail" read the newest email in your inbox: who sent it, when, the subject and how it begins. Name a sender ("the last email from Ada") to read theirs. "Reply to my last email saying …" (or "réponds au dernier mail de Marie en disant …") opens a reply in Mail with your words in it and the email quoted below, brought forward for you to check and send. Without words, Alfred asks what to say. Alfred has no way to send mail: the script it runs contains no send command, and a test keeps it that way. What an email says is spoken to you but never kept in the conversation the model sees, so an email can't give Alfred orders.
