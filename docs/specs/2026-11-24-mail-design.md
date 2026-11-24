@@ -36,10 +36,12 @@ as far as opening Mail's reply window, but the message body is a web view with n
    inbox of over ten thousand messages). Comparing each account's first message takes under a second.
 3. **A sender filter is `whose sender contains`,** run in each account's inbox: under a second across
    that same inbox. It matches a name or an address, ignoring case.
-4. **A reply opens in its own window, with `content` set to the user's words,** and Mail comes forward.
-   Mail keeps an open reply as a draft. A fresh reply's scriptable `content` is empty (the quoted original
-   isn't part of it), so setting it can't duplicate the quote. Whether Mail still shows the quote under the
-   text is checked by eye in the live run.
+4. **A reply opens in its own window with the user's words, then the quote,** and Mail comes forward.
+   Mail keeps an open reply as a draft. Setting a reply's `content` replaces the quote Mail put under it
+   (the first live draft held only the text), and a fresh reply's scriptable `content` is empty, so the
+   quote can't be kept as Mail wrote it. The script writes it back the plain-text way: an attribution line
+   in the Mac's language ("Le … a écrit :" or "On … wrote:"), then the original with "> " before each
+   line. A reply without words keeps Mail's own quote. *Rejected:* keystrokes into the window.
 5. **Reading and drafting run without a yes.** Neither sends anything, and the summary names the
    recipient ("I've written a reply to Ada about “Lunch on Friday?”").
 6. **An email's text is spoken but not remembered.** The conversation history keeps "I've read you the
@@ -74,7 +76,9 @@ this morning?", "tell whoever wrote to me last that I got it") with chat; `qwen3
 
 Live, on the owner's Mac: "read my last email" found the newest across both accounts in about 8 s (most
 of it is Alfred's start-up). "Reply to my last email saying Test draft from Alfred, please ignore." opened
-the reply in front with that text as its content.
+the reply in front with that text as its content, but without the quote; with the quote written back, the
+saved draft holds the text, one attribution line and the quoted original. The owner saw the quote in the
+window.
 
 ## Edge cases
 
@@ -95,4 +99,6 @@ the reply in front with that text as its content.
 | Is a sender filter fast enough? | Under a second on over ten thousand messages | probe |
 | Does a fresh reply's `content` hold the quote? | No, it is empty | probe (reply opened, then closed unsaved) |
 | Does setting `content` put the text in the body? | Yes: the reply's content is exactly the text | live run |
+| Does Mail keep its quote when `content` is set? | No: the saved draft held only the text | Drafts, first live run |
+| Is the written quote saved once? | Yes: one attribution line, 28 quoted lines | Drafts, second live run |
 | Does the model read emails from history? | It did before this change: `history` held the reply | `crates/alfred-core/src/agent.rs` |

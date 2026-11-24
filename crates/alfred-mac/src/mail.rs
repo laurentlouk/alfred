@@ -48,20 +48,47 @@ const MAIL_SCRIPT: &str = r#"on run argv
             set subj to subject of newest
         end try
         set info to (sender of newest) & sep & subj & sep & my stamp(date received of newest) & sep & nowStamp
-        if mode is "reply" then
-            set r to reply newest with opening window
-            if replyText is not "" then set content of r to replyText
-            activate
-            return info
-        end if
         set txt to ""
         try
             set txt to content of newest
         end try
+        if mode is "reply" then
+            set r to reply newest with opening window
+            if replyText is not "" then
+                if (length of txt) > 20000 then set txt to text 1 thru 20000 of txt
+                set content of r to replyText & linefeed & linefeed & my quoted(sender of newest, date received of newest, txt)
+            end if
+            activate
+            return info
+        end if
         if (length of txt) > 4000 then set txt to text 1 thru 4000 of txt
         return info & sep & txt
     end tell
 end run
+
+-- Setting a reply's content replaces the quote Mail put under it, so the quote is written back: an
+-- attribution line in the Mac's language (French or English), then the original with "> " before each line.
+on quoted(who, d, txt)
+    set hm to my two(hours of d) & ":" & my two(minutes of d)
+    set french to false
+    try
+        set french to (user locale of (system info)) starts with "fr"
+    end try
+    if french then
+        set head to "Le " & (date string of d) & " " & (character id 224) & " " & hm & ", " & who & " a " & (character id 233) & "crit :"
+    else
+        set head to "On " & (date string of d) & " at " & hm & ", " & who & " wrote:"
+    end if
+    set lines_ to {head}
+    repeat with p in paragraphs of txt
+        set end of lines_ to "> " & p
+    end repeat
+    set saved to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to linefeed
+    set out to lines_ as text
+    set AppleScript's text item delimiters to saved
+    return out
+end quoted
 
 on stamp(d)
     return (year of d as string) & "-" & my two((month of d) as integer) & "-" & my two(day of d) & " " & my two(hours of d) & ":" & my two(minutes of d)
@@ -245,9 +272,24 @@ mod tests {
     fn the_script_takes_text_only_through_argv_and_cannot_send() {
         assert!(MAIL_SCRIPT.starts_with("on run argv"));
         assert!(!MAIL_SCRIPT.contains("{}"));
+        assert!(MAIL_SCRIPT.is_ascii(), "accents are written as character ids, whatever the shell's encoding");
         let words: Vec<&str> = MAIL_SCRIPT.split(|c: char| !c.is_alphanumeric()).collect();
         assert!(!words.contains(&"send"), "no send command, ever");
         assert!(words.contains(&"argv"));
+    }
+
+    #[test]
+    fn the_script_compiles() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        // Compiling reads Mail's dictionary without running anything in Mail.
+        let out = std::env::temp_dir().join(format!("alfred-mail-{}.scpt", std::process::id()));
+        let mut cmd = std::process::Command::new("osacompile");
+        cmd.arg("-e").arg(MAIL_SCRIPT).arg("-o").arg(&out);
+        let result = crate::run(cmd, Duration::from_secs(30));
+        std::fs::remove_file(&out).ok();
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
