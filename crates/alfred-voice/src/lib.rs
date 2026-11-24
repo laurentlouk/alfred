@@ -13,6 +13,7 @@ pub mod capture;
 pub mod denoise;
 pub mod ears;
 pub mod models;
+pub mod player;
 pub mod text;
 pub mod vad;
 pub mod wake;
@@ -272,8 +273,14 @@ mod tests {
         if !models::KOKORO.is_ready(&m) {
             return;
         }
+        let loading = std::time::Instant::now();
         let speaker = Speaker::load(&m, "bm_george", 1.0).unwrap();
-        speaker.synthesize("Warm up.").unwrap();
+        eprintln!("kokoro: loaded in {:.2} s", loading.elapsed().as_secs_f32());
+        for _ in 0..3 {
+            let cold = std::time::Instant::now();
+            speaker.synthesize("Of course.").unwrap();
+            eprintln!("kokoro: {:.2} s for a first, cold “Of course.”", cold.elapsed().as_secs_f32());
+        }
         let reply = "Of course, I have opened Notes, and your shopping list now has milk and eggs.";
         let time = |t: &str| {
             let start = std::time::Instant::now();

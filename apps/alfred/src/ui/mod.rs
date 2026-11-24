@@ -168,6 +168,8 @@ impl Ui {
         }
         self.mode = Mode::Thinking;
         if let Some(l) = &self.links {
+            // Open the speakers while the model thinks, so the answer is heard the moment it's rendered.
+            l.playback.warm();
             l.brain.send(BrainJob::Ask { attempt: self.attempt, text }).ok();
         }
     }
@@ -179,6 +181,7 @@ impl Ui {
         self.attempt += 1;
         self.mode = Mode::Thinking;
         if let Some(l) = &self.links {
+            l.playback.warm();
             l.brain.send(BrainJob::Confirm { attempt: self.attempt, yes }).ok();
         }
     }
@@ -205,6 +208,10 @@ impl Ui {
 
     /// Listening has begun (a click, ⌘L or "Alfred"): a new request, with the field's text kept in front.
     fn begin_listening(&mut self) {
+        // A request is coming: open the speakers now, while you speak.
+        if let Some(l) = &self.links {
+            l.playback.warm();
+        }
         self.attempt += 1;
         self.typed = self.input.text.trim().to_string();
         self.mic_level = 0.0;

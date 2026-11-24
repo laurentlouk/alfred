@@ -78,7 +78,7 @@ pub fn spawn(config: Config, me: AppHandle<Ui>) -> Links {
                 match job {
                     VoiceJob::Speak { attempt, text } => {
                         let me = ui.clone();
-                        let result = speech::speak(speaker.as_ref(), &text, &config::cache_dir(), &pb, move |envelope, seconds| {
+                        let result = speech::speak(speaker.as_ref(), &text, &pb, move |envelope, seconds| {
                             me.update(move |s, tx| s.on_sentence(attempt, envelope, seconds, tx));
                         });
                         if let Err(e) = result {

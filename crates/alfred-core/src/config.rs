@@ -293,11 +293,6 @@ pub fn models_dir() -> PathBuf {
     home_dir().join("models")
 }
 
-/// Scratch audio (dictation, synthesized speech). Cleared by the OS eventually; nothing important lives here.
-pub fn cache_dir() -> PathBuf {
-    home_dir().join("cache")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

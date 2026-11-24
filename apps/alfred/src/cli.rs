@@ -139,7 +139,7 @@ fn say(text: &str) -> Result<(), String> {
         }
     };
     let playback = Playback::new();
-    speech::speak(speaker.as_ref(), text, &config::cache_dir(), &playback, |_, _| {})
+    speech::speak(speaker.as_ref(), text, &playback, |_, _| {})
 }
 
 fn listen(args: &[String]) -> Result<(), String> {

@@ -62,8 +62,17 @@ Alfred v1 worked, but daily use showed five gaps the owner asked to close:
 6. **Saying "Alfred" interrupts.** While Alfred speaks, a wake-word hit still emits `Wake`; the app stops
    speaking and captures the command after it.
 7. **Speech is brought to a speaking loudness** (RMS 0.16, about −16 dBFS, peaks at most 0.92, gain 1 to 4)
-   and played with `afplay`, which follows the system volume. *Rejected:* a fixed peak (quiet speech
-   stayed quiet), a volume setting of Alfred's own (it should respect the Mac's).
+   and played at the system volume. *Rejected:* a fixed peak (quiet speech stayed quiet), a volume setting
+   of Alfred's own (it should respect the Mac's).
+7a. **Alfred plays its own speech** (`alfred_voice::player::Speakers`): one cpal output stream on the
+   default device, each sentence queued as soon as Kokoro renders it, resampled from 24 kHz to the
+   device's rate with sherpa-onnx's resampler (flushed at the end of a reply, dropped on a stop). Opening
+   the device costs 0.16 to 0.6 s with AirPods, on every open, so the stream opens when a request begins
+   (listening, a typed request, a confirmation) and closes after 30 s of quiet: warm, the first samples
+   play 11 ms after they are queued. Measured on a three-sentence reply of 9.2 s: 10.5 s from text to
+   silence, against 13.0 s with one `afplay` per sentence, which cost about 1 s each (a 0.2 s clip took
+   1.0 to 1.5 s). *Rejected:* `afplay` (that cost, and a gap between sentences), and a stream open all the
+   time (headphones would stay held by an idle app).
 8. **Kokoro is the float32 multilingual v1.0 build, on the performance cores**
    (`hw.perflevel0.physicalcpu` threads), with a short first chunk so the first words play while the rest
    renders. Measured: 0.53 s to the first sentence against 1.24 s for int8 on 4 threads. It is a 350 MB
