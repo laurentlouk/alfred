@@ -44,12 +44,22 @@ pub fn spawn(config: Config, me: AppHandle<Ui>) -> Links {
     let playback = Playback::new();
 
     // Like any Mac app that works in other apps: when on-screen control is set up but Accessibility isn't
-    // allowed, macOS shows its own request at launch ("Alfred would like to control this computer…").
-    if config.desktop.enabled && alfred_mac::find_program(&config.desktop.command).is_some() {
+    // allowed, macOS shows its own request at launch ("Alfred would like to control this computer…") and
+    // System Settings opens at the list. agent-desktop's own view decides (it is what would fail);
+    // macOS's answer to Alfred only when agent-desktop can't tell.
+    if config.desktop.enabled
+        && let Some(program) = alfred_mac::find_program(&config.desktop.command)
+    {
         std::thread::Builder::new()
             .name("alfred-accessibility".into())
-            .spawn(|| {
-                if alfred_mac::permissions::accessibility_allowed() == Some(false) {
+            .spawn(move || {
+                use alfred_hands::desktop::Desktop;
+                let engine = alfred_hands::desktop::AgentDesktop::new(program);
+                let seen = engine
+                    .call(&["status".to_string()], None)
+                    .ok()
+                    .and_then(|s| s["permissions"]["accessibility"]["state"].as_str().map(|state| state == "granted"));
+                if seen.or_else(alfred_mac::permissions::accessibility_allowed) == Some(false) {
                     alfred_mac::permissions::ask_for_accessibility(false);
                 }
             })
