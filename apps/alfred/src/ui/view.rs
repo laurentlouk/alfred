@@ -243,8 +243,14 @@ fn confirm_row() -> El {
 
 /// The keys to remember, small. Dragging it moves Alfred too.
 fn footer(s: &Ui) -> El {
-    let hint = text(format!("{} · ⌘L talk · esc hide", pretty_shortcut(&s.shortcut))).key("status").font(SMALL).color(muted().alpha(0.85));
+    let hint = text(footer_text(s)).key("status").font(SMALL).color(muted().alpha(0.85));
     row().key("footer").window_drag().h(18.0).px(8.0).center().child(hint.truncate())
+}
+
+/// The footer's words. While Alfred records its runs, it says so, always.
+pub fn footer_text(s: &Ui) -> String {
+    let recording = if s.recording { "● rec · " } else { "" };
+    format!("{recording}{} · ⌘L talk · esc hide", pretty_shortcut(&s.shortcut))
 }
 
 /// "ctrl+alt+space" → "⌃⌥Space".

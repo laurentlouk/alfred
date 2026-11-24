@@ -75,6 +75,8 @@ pub struct Ui {
     pub wake_word: bool,
     /// The user turned listening off: the microphone is closed and nothing is heard.
     pub muted: bool,
+    /// Alfred is recording its runs (the user turned it on): the footer says so.
+    pub recording: bool,
     pub shortcut: String,
     /// The panel has had the keyboard since it was last shown. Only then does losing it hide the panel:
     /// shown while another app is in front (at launch, from Finder), it never gets focus, and hiding on
@@ -110,6 +112,7 @@ impl Ui {
             voice_ready: true,
             ears_ready: true,
             wake_word: false,
+            recording: false,
             muted: false,
             shortcut: Config::default().ui.shortcut,
             had_focus: false,
@@ -127,6 +130,7 @@ impl Ui {
         Self {
             shortcut: links.config.ui.shortcut.clone(),
             wake_word: links.config.voice.wake_word,
+            recording: links.config.recording.enabled,
             model_label: String::new(),
             voice_ready: false,
             ears_ready: false,

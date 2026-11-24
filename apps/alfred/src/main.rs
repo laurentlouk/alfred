@@ -7,7 +7,7 @@ mod wiring;
 mod workers;
 
 const COMMANDS: &[&str] =
-    &["ask", "chat", "say", "listen", "setup", "doctor", "eval", "shortcuts", "help", "--help", "-h", "version", "--version"];
+    &["ask", "chat", "say", "listen", "setup", "doctor", "eval", "shortcuts", "recordings", "help", "--help", "-h", "version", "--version"];
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

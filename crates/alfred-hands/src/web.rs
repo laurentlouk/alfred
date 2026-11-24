@@ -809,8 +809,8 @@ impl BrowserHands {
                         history.push("search needs the query in text".into());
                         continue;
                     }
-                    history.push(match self.open(&search_url(&self.search_engine, &query)) {
-                        Ok(()) => format!("searched for \"{}\"", clip(&query, 60)),
+                    history.push(match self.search(&query) {
+                        Ok(done) => done,
                         Err(e) => format!("search failed: {e}"),
                     });
                 }
@@ -918,6 +918,19 @@ impl BrowserHands {
         *answer = Some(found.clone());
         let did = summary(PLACE, history, "");
         Some(Outcome::new([found.as_str(), did.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" ")))
+    }
+
+    /// Search with the configured engine; when it answers with its robot check (Google's, known by its
+    /// address), search another engine instead, as [`WebHands::answer`] does. Returns what was done, in words.
+    fn search(&self, query: &str) -> Result<String, BrowserError> {
+        let first = engine_key(&self.search_engine);
+        self.open(&search_url(first, query))?;
+        if !is_robot_check(&Value::Null, &self.url_now().unwrap_or_default(), "") {
+            return Ok(format!("searched for \"{}\"", clip(query, 60)));
+        }
+        let second = if first == "duckduckgo" { "bing" } else { "duckduckgo" };
+        self.open(&search_url(second, query))?;
+        Ok(format!("searched {} for \"{}\" ({} asked for a robot check)", engine_name(second), clip(query, 60), engine_name(first)))
     }
 
     /// Open an address: one the user gave, or the search engine's results for a query.

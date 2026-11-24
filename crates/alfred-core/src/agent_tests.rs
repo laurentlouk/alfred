@@ -568,3 +568,57 @@ fn warming_up_reads_the_same_instructions_a_request_will_and_keeps_nothing() {
     assert_eq!(seen[0][0].content, seen[1][0].content, "same instructions, so the request reuses what the warm-up read");
     assert_eq!(seen[1].len(), 2, "the warm-up left nothing in the history: {:?}", seen[1]);
 }
+
+#[test]
+fn a_recorded_request_keeps_what_was_asked_decided_and_done() {
+    let rec = crate::record::Recorder::in_memory();
+    let model = crate::record::recorded(
+        Box::new(Scripted::new([Scripted::calls("create_note", json!({"text": "the plumber comes at 3"}))])),
+        "decide",
+        &rec,
+    );
+    let mut a = Agent::new(Some(model)).with_recorder(rec.clone());
+    let d = DryRun::new();
+    a.handle("could you jot it down that the plumber comes at 3", &d, &mut quiet());
+    a.handle("open notes", &d, &mut quiet());
+    let all = rec.entries();
+    let kinds: Vec<&str> = all.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["model", "action", "request", "action", "request"], "the router's request has no model call");
+    assert!(all[..3].iter().all(|e| e["turn"] == 1) && all[3..].iter().all(|e| e["turn"] == 2));
+    assert_eq!(all[0]["messages"].as_array().unwrap().last().unwrap()["content"], "could you jot it down that the plumber comes at 3");
+    assert_eq!(all[1]["action"]["tool"], "create_note");
+    assert_eq!((all[1]["ok"].as_bool(), all[1]["act"].as_u64()), (Some(true), Some(1)));
+    assert_eq!(all[2]["text"], "could you jot it down that the plumber comes at 3");
+    assert_eq!((all[2]["source"].as_str(), all[4]["source"].as_str()), (Some("model"), Some("router")));
+    assert!(all[2]["reply"].as_str().unwrap().contains("note") && all[2]["millis"].as_u64().is_some());
+    assert!(all[2].get("act").is_none(), "the request itself isn't inside an action");
+}
+
+#[test]
+fn a_yes_or_a_no_to_alfreds_question_is_recorded_with_what_it_was_about() {
+    let rec = crate::record::Recorder::in_memory();
+    let mut a = Agent::new(None).with_recorder(rec.clone());
+    let d = DryRun::new();
+    a.handle("quit safari", &d, &mut quiet());
+    a.answer_confirmation(false, &d, &mut quiet());
+    a.handle("quit safari", &d, &mut quiet());
+    a.answer_confirmation(true, &d, &mut quiet());
+    let all = rec.entries();
+    let said: Vec<(&str, Option<bool>)> = all.iter().map(|e| (e["kind"].as_str().unwrap(), e["yes"].as_bool())).collect();
+    assert_eq!(
+        said,
+        [("request", None), ("confirmation", Some(false)), ("request", None), ("action", None), ("confirmation", Some(true))],
+        "a no runs nothing; a yes runs the action"
+    );
+    assert_eq!(all[0]["pending"]["tool"], "quit_app", "the question waiting for an answer");
+    assert_eq!(all[1]["action"]["tool"], "quit_app");
+    assert_eq!(all[4]["turn"], 4);
+}
+
+#[test]
+fn without_a_recorder_nothing_is_kept() {
+    let rec = crate::record::Recorder::in_memory();
+    let mut a = Agent::new(None);
+    a.handle("open notes", &DryRun::new(), &mut quiet());
+    assert!(rec.entries().is_empty());
+}

@@ -26,6 +26,8 @@ USAGE
   alfred setup                write the config, download the voice models, pull the language model
   alfred doctor               check what is ready and what is missing
   alfred shortcuts            list the Shortcuts Alfred can run
+  alfred recordings [clear]   what Alfred has recorded of its own runs (when you turn recording on), or
+                              delete it all (clear asks first; --yes skips the question)
   alfred eval [--model] [FILE]  score the router (and with --model, the language model) on a fixture
                               (eval/utterances.toml by default; eval/apps.toml covers shortcuts and apps)
 
@@ -47,6 +49,7 @@ pub fn run(args: &[String]) -> i32 {
         "doctor" => doctor(),
         "eval" => eval(&rest),
         "shortcuts" => list_shortcuts(),
+        "recordings" => recordings(&rest),
         "version" | "--version" => {
             println!("alfred {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -76,7 +79,8 @@ fn ask(args: &[String]) -> Result<(), String> {
         return Err("say what to do, for example: alfred ask \"open Notes\"".into());
     }
     let cfg = load_config()?;
-    let (mut agent, mac) = crate::wiring::build(&cfg);
+    // A dry run is never recorded: it does nothing, so there is no outcome to learn from.
+    let (mut agent, mac) = crate::wiring::build_for(&cfg, !flag("--dry-run"));
     // A dry run acts on nothing, but sees where the user is, so it decides as the real run would.
     let dry = DryRun::new().with_context(mac.context());
     let exec: &dyn Executor = if flag("--dry-run") { &dry } else { &mac };
@@ -112,7 +116,7 @@ fn ask(args: &[String]) -> Result<(), String> {
 fn chat(args: &[String]) -> Result<(), String> {
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let cfg = load_config()?;
-    let (mut agent, mac) = crate::wiring::build(&cfg);
+    let (mut agent, mac) = crate::wiring::build_for(&cfg, !dry_run);
     // A dry run acts on nothing, but sees where the user is, so it decides as the real run would.
     let dry = DryRun::new().with_context(mac.context());
     let exec: &dyn Executor = if dry_run { &dry } else { &mac };
@@ -341,8 +345,82 @@ fn doctor() -> Result<(), String> {
     }
     let mic = rune::Recorder::permission();
     println!("· microphone permission: {mic:?} (asked the first time you talk to Alfred)");
+    let kept = alfred_core::record::summary(&config::recordings_dir());
+    println!(
+        "· recording is {} ({} kept; `alfred recordings` says more)",
+        if cfg.recording.enabled { "on" } else { "off" },
+        megabytes(kept.bytes)
+    );
     println!("· Notes and Reminders ask for Automation permission the first time Alfred uses them");
     if ok { Ok(()) } else { Err("some pieces are missing: `alfred setup` fixes most of them".into()) }
+}
+
+/// What the recordings folder holds, in words; `clear` deletes it.
+fn recordings(args: &[String]) -> Result<(), String> {
+    let cfg = load_config()?;
+    let dir = config::recordings_dir();
+    let found = alfred_core::record::summary(&dir);
+    if args.first().map(String::as_str) == Some("clear") {
+        if found.files == 0 {
+            println!("There are no recordings to delete.");
+            return Ok(());
+        }
+        let sure = args.iter().any(|a| a == "--yes") || {
+            eprint!("Delete {} of recordings in {}? ", megabytes(found.bytes), dir.display());
+            std::io::stdin().is_terminal() && confirm_on_terminal()
+        };
+        if !sure {
+            println!("Nothing was deleted.");
+            return Ok(());
+        }
+        let n = alfred_core::record::clear(&dir).map_err(|e| format!("couldn't delete the recordings: {e}"))?;
+        println!("Deleted {n} file(s) of recordings.");
+        return Ok(());
+    }
+    println!("{}", recording_status(&cfg, &found, &dir));
+    Ok(())
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1e6)
+}
+
+/// "Recording is on …" or "off …", with what has been kept so far.
+fn recording_status(cfg: &Config, found: &alfred_core::record::Summary, dir: &Path) -> String {
+    let mut lines = vec![if cfg.recording.enabled {
+        format!(
+            "Recording is on: Alfred keeps what it is asked, what its models see and answer, and what each action does, in {} (this Mac only).",
+            dir.display()
+        )
+    } else {
+        "Recording is off. Turn it on with `enabled = true` under `[recording]` in the config: Alfred then keeps what it is asked, what its models see and answer (including what is on screen in the apps and pages it works in), and what each action does, on this Mac only.".to_string()
+    }];
+    if found.files == 0 {
+        lines.push("Nothing has been recorded yet.".into());
+    } else {
+        let n = |k: &str| found.kinds.get(k).copied().unwrap_or(0);
+        let days = match (&found.first_day, &found.last_day) {
+            (Some(a), Some(b)) if a == b => format!("on {a}"),
+            (Some(a), Some(b)) => format!("from {a} to {b}"),
+            _ => String::new(),
+        };
+        lines.push(format!(
+            "Kept {days}: {} requests, {} model calls, {} actions ({} worked, {} failed), {} yes/no answers; {} of {} MB.",
+            n("request"),
+            n("model"),
+            n("action"),
+            found.worked,
+            found.failed,
+            n("confirmation"),
+            megabytes(found.bytes),
+            cfg.recording.max_mb
+        ));
+        if found.bytes >= cfg.recording.max_mb * 1_000_000 {
+            lines.push("The folder is full, so nothing new is recorded: raise `max_mb` or run `alfred recordings clear`.".into());
+        }
+        lines.push("`alfred recordings clear` deletes them.".into());
+    }
+    lines.join("\n")
 }
 
 fn list_shortcuts() -> Result<(), String> {
@@ -396,6 +474,27 @@ mod tests {
         assert!(same_model("qwen3:0.6b", "qwen3:0.6b"));
         assert!(same_model("llama3:latest", "llama3"));
         assert!(!same_model("qwen3:1.7b", "qwen3:0.6b"));
+    }
+
+    #[test]
+    fn recording_status_says_what_is_kept_and_how_to_delete_it() {
+        let dir = std::env::temp_dir().join(format!("alfred-cli-recordings-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let mut cfg = Config::default();
+        let off = recording_status(&cfg, &alfred_core::record::summary(&dir), &dir);
+        assert!(
+            off.starts_with("Recording is off.") && off.contains("on this Mac only") && off.contains("Nothing has been recorded"),
+            "{off}"
+        );
+        cfg.recording.enabled = true;
+        let rec = alfred_core::record::Recorder::to_dir(&dir, 1);
+        rec.next_turn();
+        rec.record("request", serde_json::json!({"text": "open notes"}));
+        rec.record("action", serde_json::json!({"ok": true}));
+        let on = recording_status(&cfg, &alfred_core::record::summary(&dir), &dir);
+        assert!(on.starts_with("Recording is on") && on.contains("1 requests") && on.contains("(1 worked, 0 failed)"), "{on}");
+        assert!(on.contains("alfred recordings clear"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

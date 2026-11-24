@@ -5,12 +5,16 @@
 //! saves a second model call (about two seconds on a 0.6B model) and keeps a small model from
 //! embellishing what happened.
 
-use serde_json::Value;
+use std::sync::Arc;
+use std::time::Instant;
 
-use crate::action::{Action, Executor, Risk};
+use serde_json::{Value, json};
+
+use crate::action::{Action, Executor, Outcome, Risk};
 use crate::catalog::{Catalog, fold};
 use crate::config::{Thinking, ToolMode};
 use crate::llm::{ChatMessage, ChatModel, LlmError, ModelReply, Role, ToolCall};
+use crate::record::Recorder;
 use crate::router::{self, Route, Slot};
 use crate::tools::{action_from_call_in, decision_guide_for, decision_schema_for, decision_to_call, tools_json_for};
 
@@ -37,6 +41,18 @@ fn native_prompt(catalog: &Catalog) -> String {
         p.push_str(" For a task on websites that takes more than one step (finding something on a site, reading a page, comparing prices), and for any question or step about a page that is open, use use_browser (tab yours for the page the user is looking at, alfred for Alfred's own tab, which stays on the last site it opened); a plain search stays web_search and opening a site stays open_url.");
     }
     p
+}
+
+/// A turn's outcome as a record's fields, added to `fields`.
+fn turn_fields(mut fields: Value, turn: &Turn, started: Instant) -> Value {
+    fields["source"] = json!(format!("{:?}", turn.source).to_lowercase());
+    fields["reply"] = json!(turn.reply);
+    fields["actions"] = json!(turn.done.len());
+    if let Some(waiting) = &turn.pending {
+        fields["pending"] = json!(waiting);
+    }
+    fields["millis"] = json!(started.elapsed().as_millis() as u64);
+    fields
 }
 
 /// How to read "this" and "here", in the instructions on every request; where the user is right now comes
@@ -116,6 +132,45 @@ pub struct Agent {
     thinking: Thinking,
     /// The model that thinks hard questions through, when it isn't the one that decides.
     thinker: Option<Box<dyn ChatModel>>,
+    /// Where requests, actions and their outcomes are kept, when the user turned recording on.
+    recorder: Option<Arc<Recorder>>,
+}
+
+/// The executor as the agent uses it while recording: every action is written down with its outcome, and
+/// marked as running so the model calls made inside it (the step loops) are tied to it.
+struct Watched<'a> {
+    exec: &'a dyn Executor,
+    recorder: Option<&'a Recorder>,
+}
+
+impl Executor for Watched<'_> {
+    fn execute(&self, action: &Action) -> Result<Outcome, String> {
+        let Some(recorder) = self.recorder else { return self.exec.execute(action) };
+        recorder.start_action();
+        let started = Instant::now();
+        let outcome = self.exec.execute(action);
+        let mut fields = json!({
+            "action": action,
+            "ok": outcome.is_ok(),
+            "said": match &outcome {
+                Ok(o) => o.summary.as_str(),
+                Err(e) => e.as_str(),
+            },
+            // The words came from an email, a window or a page, not from Alfred.
+            "outside": action.reads_outside_text(),
+            "millis": started.elapsed().as_millis() as u64,
+        });
+        if let Ok(Outcome { follow_up: Some(next), .. }) = &outcome {
+            fields["follow_up"] = json!(next);
+        }
+        recorder.record("action", fields);
+        recorder.end_action();
+        outcome
+    }
+
+    fn context(&self) -> crate::context::Context {
+        self.exec.context()
+    }
 }
 
 impl Agent {
@@ -131,12 +186,19 @@ impl Agent {
             trusted: Vec::new(),
             thinking: Thinking::Auto,
             thinker: None,
+            recorder: None,
         }
     }
 
     /// When the model thinks before answering in words.
     pub fn with_thinking(mut self, thinking: Thinking) -> Self {
         self.thinking = thinking;
+        self
+    }
+
+    /// Keep what is asked, what is done and how it went (the user turned recording on).
+    pub fn with_recorder(mut self, recorder: Arc<Recorder>) -> Self {
+        self.recorder = Some(recorder);
         self
     }
 
@@ -233,7 +295,15 @@ impl Agent {
     /// Handle what the user said or typed.
     pub fn handle(&mut self, text: &str, exec: &dyn Executor, on: &mut dyn FnMut(Event)) -> Turn {
         let text = text.trim();
-        let turn = self.decide(text, exec, on);
+        let recorder = self.recorder.clone();
+        if let Some(r) = &recorder {
+            r.next_turn();
+        }
+        let started = Instant::now();
+        let turn = self.decide(text, &Watched { exec, recorder: recorder.as_deref() }, on);
+        if let Some(r) = recorder.as_ref().filter(|_| !text.is_empty()) {
+            r.record("request", turn_fields(json!({ "text": text }), &turn, started));
+        }
         if !text.is_empty() {
             self.history.push((text.to_string(), remembered(&turn)));
             let keep = self.history_turns.max(1);
@@ -246,6 +316,20 @@ impl Agent {
 
     /// Answer the pending confirmation directly (the UI's Yes and No chips).
     pub fn answer_confirmation(&mut self, yes: bool, exec: &dyn Executor, on: &mut dyn FnMut(Event)) -> Turn {
+        let recorder = self.recorder.clone();
+        if let Some(r) = &recorder {
+            r.next_turn();
+        }
+        let started = Instant::now();
+        let asked = self.pending.clone();
+        let turn = self.confirm(yes, &Watched { exec, recorder: recorder.as_deref() }, on);
+        if let (Some(r), Some(action)) = (&recorder, asked) {
+            r.record("confirmation", turn_fields(json!({ "yes": yes, "action": action }), &turn, started));
+        }
+        turn
+    }
+
+    fn confirm(&mut self, yes: bool, exec: &dyn Executor, on: &mut dyn FnMut(Event)) -> Turn {
         let Some(action) = self.pending.take() else {
             return Turn::say("There's nothing waiting for an answer.", Source::Confirm);
         };
@@ -263,7 +347,7 @@ impl Agent {
         }
         if self.pending.is_some() {
             match yes_or_no(text) {
-                Some(yes) => return self.answer_confirmation(yes, exec, on),
+                Some(yes) => return self.confirm(yes, exec, on),
                 None => self.pending = None, // a new request replaces the question
             }
         }

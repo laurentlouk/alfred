@@ -253,3 +253,12 @@ fn a_command_with_no_words_or_a_microphone_error_is_explained() {
     ui.on_ears(Heard::Error("the microphone went away".into()));
     assert!(ui.caption().contains("microphone went away"));
 }
+
+#[test]
+fn the_footer_says_when_alfred_is_recording() {
+    let mut ui = Ui::demo();
+    assert!(!view::footer_text(&ui).contains("rec"));
+    ui.recording = true;
+    assert!(view::footer_text(&ui).starts_with("● rec · "), "{}", view::footer_text(&ui));
+    assert!(runtime(ui).find("status").is_some());
+}

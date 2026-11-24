@@ -11,6 +11,7 @@ pub mod context;
 pub mod eval;
 pub mod llm;
 pub mod normalize;
+pub mod record;
 pub mod router;
 pub mod tools;
 

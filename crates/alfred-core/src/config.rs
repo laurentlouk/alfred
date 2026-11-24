@@ -15,6 +15,24 @@ pub struct Config {
     pub shortcuts: ShortcutsConfig,
     pub desktop: DesktopConfig,
     pub browser: BrowserConfig,
+    pub recording: RecordingConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordingConfig {
+    /// Keep what Alfred was asked, what its models saw and answered, and what each action did, in the
+    /// `recordings` folder beside this file, on this Mac only, to teach Alfred from its own runs later.
+    /// They include what is on screen when Alfred works in an app or on a page (messages, pages).
+    pub enabled: bool,
+    /// Recording stops when the folder reaches this size, in megabytes.
+    pub max_mb: u64,
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self { enabled: false, max_mb: 500 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -297,6 +315,11 @@ pub fn models_dir() -> PathBuf {
     home_dir().join("models")
 }
 
+/// Where recordings are kept, when the user turns them on (see [`crate::record`]).
+pub fn recordings_dir() -> PathBuf {
+    home_dir().join("recordings")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +359,16 @@ mod tests {
         assert_eq!(c.llm.base_url, "http://127.0.0.1:11434");
         assert_eq!(c.search.engine, "duckduckgo");
         assert!(c.voice.speak);
+    }
+
+    #[test]
+    fn recording_is_off_unless_the_user_turns_it_on() {
+        let c = Config::default();
+        assert!(!c.recording.enabled, "what is on screen is kept only when the user says so");
+        assert_eq!(c.recording.max_mb, 500);
+        let on: Config = toml::from_str("[recording]\nenabled = true\n").unwrap();
+        assert!(on.recording.enabled && on.recording.max_mb == 500);
+        assert!(recordings_dir().ends_with("recordings"));
     }
 
     #[test]

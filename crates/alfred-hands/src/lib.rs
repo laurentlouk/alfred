@@ -692,7 +692,7 @@ pub(crate) fn trace(view: &str, step: &Step) {
 }
 
 /// How history entries that record a real action begin; every other entry is a note for the model.
-const DID: &[&str] = &["clicked ", "filled ", "scrolled ", "pressed Enter", "went back", "searched for ", "opened ", "declined "];
+const DID: &[&str] = &["clicked ", "filled ", "scrolled ", "pressed Enter", "went back", "searched ", "opened ", "declined "];
 
 fn did(entry: &str) -> bool {
     DID.iter().any(|d| entry.starts_with(d))

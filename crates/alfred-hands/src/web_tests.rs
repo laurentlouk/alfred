@@ -839,8 +839,9 @@ fn when_both_engines_ask_for_a_robot_check_it_is_left_to_the_user() {
 fn a_robot_check_box_is_never_clicked_in_a_task() {
     let web = Shared::default();
     web.0.state.lock().unwrap().robot_check = true;
-    let (h, _) = hands(&web, vec![step("search", json!({"text": "weather"})), step("click", json!({"ref": "e3"}))], 10);
-    let o = h.browse("weather", None).unwrap();
+    // The task starts on Google's results, which answer with the robot check.
+    let (h, _) = hands(&web, vec![step("click", json!({"ref": "e3"}))], 10);
+    let o = h.browse("weather", Some("https://www.google.com/search?q=weather")).unwrap();
     assert!(o.summary.ends_with("please answer its check in the browser window, then ask me again."), "{}", o.summary);
     assert!(!web.clicked("@e3"));
 }
@@ -1018,4 +1019,15 @@ fn in_their_chrome_a_page_whose_tab_cant_be_found_opens_in_alfreds_tab() {
     let o = h.browse_theirs("what is this page", MAIN).unwrap();
     assert!(o.summary.starts_with("It's the Wikipedia main page"), "{}", o.summary);
     assert!(web.log().contains(&args(["tab", "new", "--label", "alfred", MAIN])), "{:?}", web.log());
+}
+
+#[test]
+fn a_search_step_that_meets_googles_robot_check_uses_another_engine() {
+    let web = Shared::default();
+    web.0.state.lock().unwrap().robot_check = true;
+    let (h, _) = hands(&web, vec![step("search", json!({"text": "weather in Paris"})), step("done", json!({"note": "Found it."}))], 10);
+    let o = h.browse("find the weather in Paris", None).unwrap();
+    assert!(web.log().iter().any(|c| c[0] == "open" && c[1] == "https://duckduckgo.com/?q=weather+in+Paris"), "{:?}", web.log());
+    assert_eq!(page_now(&web), "ddg", "the run goes on from results it can read");
+    assert!(o.summary.contains("searched DuckDuckGo for \"weather in Paris\" (Google asked for a robot check)"), "{}", o.summary);
 }

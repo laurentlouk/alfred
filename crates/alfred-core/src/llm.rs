@@ -19,7 +19,7 @@ pub enum Role {
 }
 
 impl Role {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Role::System => "system",
             Role::User => "user",
@@ -66,6 +66,8 @@ pub struct ModelReply {
 pub enum LlmError {
     /// Nothing answered at the address.
     Unreachable { base: String, detail: String },
+    /// The server is there but didn't answer in time (a long prompt, or it is busy with another request).
+    TimedOut,
     /// The server answered but doesn't have the model.
     ModelMissing { model: String },
     /// Any other error status.
@@ -80,6 +82,7 @@ impl fmt::Display for LlmError {
             LlmError::Unreachable { base, .. } => {
                 write!(f, "I can't reach the language model at {base}. Start it with `ollama serve`.")
             }
+            LlmError::TimedOut => write!(f, "The language model took too long to answer; it may be busy. Please ask me again."),
             LlmError::ModelMissing { model } => write!(f, "The model {model} isn't installed. Run `ollama pull {model}`."),
             LlmError::Http { status, message } => write!(f, "The model server answered {status}: {message}"),
             LlmError::BadReply(m) => write!(f, "The model's answer didn't make sense: {m}"),
@@ -179,7 +182,10 @@ fn post(agent: &ureq::Agent, url: &str, base: &str, key: Option<&str>, body: &Va
     if let Some(k) = key {
         req = req.header("Authorization", &format!("Bearer {k}"));
     }
-    let mut resp = req.send_json(body).map_err(|e| LlmError::Unreachable { base: base.to_string(), detail: e.to_string() })?;
+    let mut resp = req.send_json(body).map_err(|e| match e {
+        ureq::Error::Timeout(_) => LlmError::TimedOut,
+        e => LlmError::Unreachable { base: base.to_string(), detail: e.to_string() },
+    })?;
     let status = resp.status().as_u16();
     let text = resp.body_mut().read_to_string().map_err(|e| LlmError::BadReply(e.to_string()))?;
     let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
@@ -657,6 +663,26 @@ impl ChatModel for Scripted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_that_takes_too_long_is_said_to_be_slow_not_missing() {
+        // A server that accepts the connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let held = std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                std::thread::sleep(Duration::from_secs(3));
+                drop(stream);
+            }
+        });
+        let e = Ollama::new(&base, "m", 1).chat(&[ChatMessage::new(Role::User, "hi")], &Value::Null).unwrap_err();
+        assert!(matches!(e, LlmError::TimedOut), "{e:?}");
+        assert!(e.to_string().contains("took too long") && !e.to_string().contains("ollama serve"), "{e}");
+        drop(held);
+        // Nothing listening at all is still "can't reach".
+        let e = Ollama::new("http://127.0.0.1:9", "m", 1).chat(&[ChatMessage::new(Role::User, "hi")], &Value::Null).unwrap_err();
+        assert!(matches!(e, LlmError::Unreachable { .. }), "{e:?}");
+    }
 
     #[test]
     fn strips_think_blocks() {

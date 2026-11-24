@@ -22,6 +22,7 @@ A local, voice-first assistant for the Mac in Rust, with a Rune UI. Start with `
 - Mail is drafted, never sent: `crates/alfred-mac/src/mail.rs` has no send command, and a test fails if one appears.
 - Text written by someone else (an email, an app's window) is spoken but kept out of the model's history: `Action::reads_outside_text` marks the actions that return it.
 - What the user is looking at reaches the model as an app's name and a site's host only (`alfred_core::context`), never a window title or page text.
+- Recordings (`alfred_core::record`) are off by default, stay on the Mac in files only the user can read, and are never sent anywhere; a dry run records nothing. The app shows `● rec` while recording.
 - On-screen actions (`crates/alfred-hands`) never click what `guard::is_risky` names; such clicks return as a follow-up the user confirms.
 - Never interpolate user or model text into AppleScript; pass it through `on run argv` (see `crates/alfred-mac`).
 - Keep `alfred-core` free of UI and native code.

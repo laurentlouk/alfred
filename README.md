@@ -240,6 +240,10 @@ enabled = true               # on-screen actions, when agent-desktop is installe
 model = "qwen3:8b"           # the model that reads app windows and web pages
 max_steps = 8
 
+[recording]
+enabled = false              # true: keep what Alfred saw, decided and did, on this Mac only (see below)
+max_mb = 500                 # recording stops when the folder reaches this size
+
 [browser]
 enabled = true               # website tasks and spoken search answers, when agent-browser is installed
 command = "agent-browser"
@@ -248,6 +252,23 @@ headed = true                # show the window, so you can watch and step in
 use_chrome = false           # true: work in your own Chrome, in a tab of its own
 max_steps = 10
 ```
+
+## Recording, to teach Alfred later
+
+Alfred can keep a record of its own runs, so it can be taught from them: fixed recipes for what you do often, examples from your own requests, or fine-tuning a small model. It is off unless you turn it on:
+
+```toml
+[recording]
+enabled = true
+```
+
+While it is on, the footer shows `● rec`, and `~/Library/Application Support/Alfred/recordings` gets one file a day that only you can read. Each line is one record: a request and its answer, a model call with exactly what the model was sent and what it answered, an action and whether it worked, or your yes or no to a question. That includes what was on screen in the apps and pages Alfred worked in (a window's text, a page's text), so treat the folder as private. Nothing is sent anywhere, dry runs aren't recorded, and recording stops at `max_mb`.
+
+```bash
+alfred recordings
+```
+
+says what has been kept, and `alfred recordings clear` deletes it.
 
 ## Develop
 

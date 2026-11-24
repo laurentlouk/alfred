@@ -418,7 +418,11 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
             if theirs {
                 return Ok(Action::UseTheirTab { task });
             }
-            let url = string_arg(&args, &["url", "link", "website", "site", "address", "page"]).and_then(|raw| said_url(&raw, utterance));
+            // The address the model gave, when the user said it; else one the user said outright ("on
+            // en.wikipedia.org, find…"), which models sometimes leave in the task.
+            let url = string_arg(&args, &["url", "link", "website", "site", "address", "page"])
+                .and_then(|raw| said_url(&raw, utterance))
+                .or_else(|| utterance.split_whitespace().find_map(url));
             Ok(Action::UseBrowser { task, url })
         }
         other => Err(format!(
@@ -610,8 +614,8 @@ mod tests {
         );
         assert_eq!(
             browse(json!({"text": "x", "url": "https://x.com"}), "on fix.com find x").unwrap(),
-            Action::UseBrowser { task: "x".into(), url: None },
-            "a host inside another one was not said"
+            Action::UseBrowser { task: "x".into(), url: Some("https://fix.com".into()) },
+            "a host inside another one was not said: the site the user did say is where it starts"
         );
         assert_eq!(
             browse(json!({"text": "x", "url": "https://wikipedia.org.evil.net"}), "on Wikipedia, find x").unwrap(),
@@ -633,6 +637,36 @@ mod tests {
         assert_eq!(
             action_from_call_in(&n, &a, "read me the top story on hacker news", &catalog()).unwrap(),
             Action::UseBrowser { task: "read the top story".into(), url: None }
+        );
+    }
+
+    #[test]
+    fn a_site_the_user_said_is_where_the_browser_starts_even_when_the_model_forgets_it() {
+        // Seen in a recording: the model put "on en.wikipedia.org" in the task and left url empty.
+        let said = "on en.wikipedia.org, find out who created the Simula language";
+        assert_eq!(
+            action_from_call_in(
+                "use_browser",
+                &json!({"text": "find out who created the Simula language on en.wikipedia.org"}),
+                said,
+                &catalog()
+            )
+            .unwrap(),
+            Action::UseBrowser {
+                task: "find out who created the Simula language on en.wikipedia.org".into(),
+                url: Some("https://en.wikipedia.org".into())
+            }
+        );
+        // No address said: none is made up, from the task or anywhere else.
+        assert_eq!(
+            action_from_call_in(
+                "use_browser",
+                &json!({"text": "read the top story on news.ycombinator.com"}),
+                "read me the top story",
+                &catalog()
+            )
+            .unwrap(),
+            Action::UseBrowser { task: "read the top story on news.ycombinator.com".into(), url: None }
         );
     }
 
