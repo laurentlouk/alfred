@@ -137,6 +137,12 @@ pub fn from_config(cfg: &LlmConfig) -> Box<dyn ChatModel> {
     }
 }
 
+/// The model that thinks hard questions through, when `think_model` names one other than `model`.
+pub fn thinker_from_config(cfg: &LlmConfig) -> Option<Box<dyn ChatModel>> {
+    let name = cfg.think_model.as_deref().map(str::trim).filter(|m| !m.is_empty() && *m != cfg.model)?;
+    Some(from_config(&cfg.with_model(name)))
+}
+
 fn agent(timeout_secs: u64) -> ureq::Agent {
     ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(timeout_secs.max(1)))).http_status_as_error(false).build().into()
 }

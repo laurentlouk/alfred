@@ -104,7 +104,11 @@ fn ask(args: &[String]) -> Result<(), String> {
 }
 
 fn agent_label(cfg: &Config) -> String {
-    format!("{} ({})", cfg.llm.model, if cfg.llm.provider == Provider::Ollama { "Ollama" } else { "OpenAI-compatible" })
+    let server = if cfg.llm.provider == Provider::Ollama { "Ollama" } else { "OpenAI-compatible" };
+    match cfg.llm.think_model.as_deref().filter(|m| !m.trim().is_empty() && *m != cfg.llm.model) {
+        Some(thinker) => format!("{} ({server}), thinking with {thinker}", cfg.llm.model),
+        None => format!("{} ({server})", cfg.llm.model),
+    }
 }
 
 fn confirm_on_terminal() -> bool {
@@ -222,6 +226,9 @@ fn doctor() -> Result<(), String> {
                     list.iter().any(|m| same_model(m, &cfg.llm.model)),
                     format!("model {} (ollama pull {})", cfg.llm.model, cfg.llm.model),
                 );
+                if let Some(thinker) = cfg.llm.think_model.as_deref().filter(|m| !m.trim().is_empty() && *m != cfg.llm.model) {
+                    line(list.iter().any(|m| same_model(m, thinker)), format!("thinking model {thinker} (ollama pull {thinker})"));
+                }
             }
             Err(e) => line(false, format!("Ollama: {e}")),
         },
@@ -314,7 +321,11 @@ fn eval(args: &[String]) -> Result<(), String> {
     }
     let report = alfred_core::eval::run(&cases, || {
         let model = with_model.then(|| llm::from_config(&cfg.llm));
-        Agent::new(model).with_tool_mode(cfg.llm.tool_mode).with_thinking(cfg.llm.thinking).with_catalog(catalog.clone())
+        let agent = Agent::new(model).with_tool_mode(cfg.llm.tool_mode).with_thinking(cfg.llm.thinking).with_catalog(catalog.clone());
+        match with_model.then(|| llm::thinker_from_config(&cfg.llm)).flatten() {
+            Some(thinker) => agent.with_thinker(thinker),
+            None => agent,
+        }
     });
     print!("{}", report.render());
     Ok(())

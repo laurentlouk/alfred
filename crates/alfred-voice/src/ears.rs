@@ -178,7 +178,7 @@ impl Ears {
     /// Alfred is talking (or stopped). Saying "Alfred" still barges in: a hit emits [`Heard::Wake`]
     /// and captures the command after it, so the app should stop talking on `Wake`. Nothing else
     /// starts a capture by itself. While Alfred talks, click-to-talk leaves out the audio from before
-    /// the click, which is his own voice.
+    /// the click, which is its own voice.
     pub fn set_speaking(&self, on: bool) {
         self.control.send(Control::Speaking(on)).ok();
     }
@@ -393,7 +393,7 @@ impl Core {
         if self.command.is_some() {
             return;
         }
-        // While Alfred talks, the audio before the click is his own voice.
+        // While Alfred talks, the audio before the click is its own voice.
         let preroll = if self.speaking { 0 } else { samples(PREROLL_SECS).min(self.recent.len()) };
         let start = self.recent.len() - preroll;
         self.begin(start);

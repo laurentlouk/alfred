@@ -489,3 +489,14 @@ fn a_native_model_that_describes_instead_of_acting_is_nudged_once() {
     let seen = model.seen.lock().unwrap();
     assert!(seen[1].last().unwrap().content.contains("call the right tool"), "{:?}", seen[1].last());
 }
+
+#[test]
+fn a_separate_thinker_answers_the_hard_questions() {
+    let model = std::sync::Arc::new(Scripted::new([Scripted::calls("chat", json!({"reply": "About 400.", "hard": true}))]));
+    let thinker = std::sync::Arc::new(Scripted::new([Scripted::says("17 by 23 is 391.")]));
+    let mut a = Agent::new(Some(Box::new(model.clone()))).with_thinker(Box::new(thinker.clone()));
+    assert_eq!(a.handle("what's 17 by 23?", &DryRun::new(), &mut quiet()).reply, "17 by 23 is 391.");
+    assert_eq!(reasoned(&model), 0, "the model that decides doesn't think");
+    assert_eq!(reasoned(&thinker), 1, "the thinker does");
+    assert!(thinker.seen.lock().unwrap()[0][0].content.contains("Think the question through"));
+}

@@ -8,7 +8,7 @@ A local, voice-first assistant for the Mac in Rust, with a Rune UI. Start with `
 
 - `cargo test --workspace`: the whole suite. The Kokoro → Moonshine round trip runs only when `alfred setup` has downloaded the voice models.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`: CI runs both.
-- `cargo run -p alfred -- eval [--model] [eval/apps.toml]`: score the router (and the configured model) on `eval/utterances.toml`, or on the shortcuts and on-screen fixture.
+- `cargo run -p alfred -- eval [--model] [eval/apps.toml | eval/thinking.toml]`: score the router (and the configured model) on `eval/utterances.toml`, the shortcuts and on-screen fixture, or the hard questions.
 - `cargo run -p alfred -- shortcuts`: list the user's Shortcuts.
 - `cargo run -p alfred -- --snap out.png --scene conversation --scale 2`: render the panel headlessly (scenes: idle, listening, thinking, speaking, conversation, confirm).
 - `cargo run -p alfred -- ask --dry-run "…"`: run the brain without touching the Mac.

@@ -55,6 +55,8 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
    (about 520 MB), which is small enough to test with. The README recommends `qwen3.5:0.8b` or `qwen3:4b`
    for daily use. *Rejected:* in-process llama.cpp (slow builds and model management; a v2 candidate);
    the RunAnywhere SDK (Swift only, and its license restricts larger companies).
+   *Thinking on demand (added 2026-11-24):* hard questions are asked again with `think: true`, optionally
+   on a second model (`think_model`); see `2026-11-24-listening-thinking-orb-design.md`, decisions 9 to 11.
 6. **Typed tool registry with risk levels.** Each tool has a name, a description, a JSON schema, a risk
    (`Safe` or `Confirm`) and an executor. Confirm-level tools pause on a Yes/No chip in the panel, or a
    prompt in the CLI. v1 tools: `open_app`, `quit_app` (Confirm), `create_note`, `create_reminder`,
@@ -63,15 +65,17 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
    never goes into the script source, so AppleScript injection is impossible by construction. `open_url`
    accepts `http` and `https` only. App names must not contain a path. A `DryRun` executor records actions
    instead of running them, for tests and the eval.
-8. **Voice out: Kokoro-82M v1.0 int8 through `sherpa-onnx` (prebuilt static libs, Apache-2.0), with
+8. **Voice out:** (superseded 2026-11-24: now the float32 build on the performance cores, brought to a
+   speaking loudness; see `2026-11-24-listening-thinking-orb-design.md`, decisions 7 and 8) **Kokoro-82M v1.0 int8 through `sherpa-onnx` (prebuilt static libs, Apache-2.0), with
    phonemes from `misaki-rs` (MIT, Kokoro's own G2P), voice `bm_george` (id 26).** Measured: misaki
    phonemes round-tripped through Moonshine almost word for word, while sherpa's lexicon mode silently
    dropped "opened" as out-of-vocabulary. Speech is synthesized sentence by sentence so the first words
    play while the rest render (Kokoro ran at about real time on an M1 Max). macOS `say` is the fallback
    while the models are missing. *Rejected:* `piper-phonemize` and espeak-ng (GPL-3.0, would make the
    binaries GPL), a Python kokoro-onnx sidecar (a second runtime), Kokoro-FastAPI (Docker).
-9. **Voice in: Rune's `Recorder` (16 kHz WAV) plus Moonshine tiny EN quantized (28 MB) through
-   `sherpa-onnx`.** Click the orb to talk. Recording stops on a click, after 1.4 s of silence, or after
+9. **Voice in:** (superseded 2026-11-24: one microphone stream with a wake word, Silero VAD and a
+   denoiser; see `2026-11-24-listening-thinking-orb-design.md`, decisions 1 to 6) **Rune's `Recorder` (16 kHz WAV) plus Moonshine tiny EN
+   quantized (28 MB) through `sherpa-onnx`.** Click the orb to talk. Recording stops on a click, after 1.4 s of silence, or after
    20 s. Measured: 4.4 s of speech transcribed in 55 ms. *Rejected:* whisper.cpp (a bigger model and
    build), Apple SpeechAnalyzer (Objective-C bridging, macOS only).
    *Live text (added 2026-11-24, at the owner's request):* while you speak, the words appear in the field.
@@ -89,7 +93,8 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
 12. **Crates:** `alfred-core` (router, agent, tools, repair, config, eval; no Rune, no native code),
     `alfred-mac` (macOS executors), `alfred-voice` (Kokoro, Moonshine, model download), and
     `apps/alfred` (the Rune UI and the CLI).
-13. **UI:** a 560-point-wide dark card. A brass "Alfred orb" (concentric dotted rings) breathes when
+13. **UI:** (superseded 2026-11-24: a transparent, always-on-top window holding a green liquid orb drawn
+    on the GPU, on every Space; see `2026-11-24-listening-thinking-orb-design.md`, decision 12) A 560-point-wide dark card. A brass "Alfred orb" (concentric dotted rings) breathes when
     idle, ripples with the input level while listening, spins while thinking and pulses while speaking.
     Below it: a state caption ("At your service."), the input field, the last turns with tool chips
     ("Opened Notes", "Saved note 'Milk'"), and Yes/No chips for Confirm tools. Headless scenes (`idle`,

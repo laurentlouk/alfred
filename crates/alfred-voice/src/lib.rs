@@ -226,65 +226,6 @@ impl Listener {
         let wave = Wave::read(&path.to_string_lossy()).ok_or_else(|| format!("couldn't read {}", path.display()))?;
         Ok(self.transcribe(wave.samples(), wave.sample_rate() as u32))
     }
-
-    /// What has been said so far in a recording that is still being written, for live text while the
-    /// user speaks. Empty when there is too little audio yet or the file can't be read.
-    pub fn transcribe_partial(&self, path: &Path) -> String {
-        let Ok(bytes) = std::fs::read(path) else { return String::new() };
-        match read_growing_wav(&bytes) {
-            Some((samples, rate)) if samples.len() as u32 >= rate * 3 / 10 => self.transcribe(&samples, rate),
-            _ => String::new(),
-        }
-    }
-}
-
-/// The samples of a 16-bit PCM WAV, read up to the end of the file whatever its header says. A recorder
-/// writes the header's sizes only when it stops, so a file still being recorded has its sound after the
-/// `data` chunk and a size of 0 (or a placeholder) in front of it. Other chunks (a recorder's `FLLR`
-/// padding) are skipped. Returns mono samples (channels averaged) and the sample rate.
-pub fn read_growing_wav(bytes: &[u8]) -> Option<(Vec<f32>, u32)> {
-    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return None;
-    }
-    let u16_at = |i: usize| bytes.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
-    let u32_at = |i: usize| bytes.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-    let mut format: Option<(u16, u32, u16)> = None; // channels, rate, bits
-    let mut at = 12;
-    while at + 8 <= bytes.len() {
-        let id = &bytes[at..at + 4];
-        let size = u32_at(at + 4)? as usize;
-        let body = at + 8;
-        if id == b"fmt " {
-            let tag = u16_at(body)?;
-            if tag != 1 && tag != 0xFFFE {
-                return None; // not integer PCM
-            }
-            format = Some((u16_at(body + 2)?, u32_at(body + 4)?, u16_at(body + 14)?));
-        } else if id == b"data" {
-            let (channels, rate, bits) = format?;
-            if bits != 16 || channels == 0 || rate == 0 {
-                return None;
-            }
-            let frame = 2 * channels as usize;
-            let data = &bytes[body..];
-            let frames = data.len() / frame;
-            let samples = (0..frames)
-                .map(|f| {
-                    let sum: f32 = (0..channels as usize)
-                        .map(|c| {
-                            let i = f * frame + 2 * c;
-                            i16::from_le_bytes([data[i], data[i + 1]]) as f32 / 32768.0
-                        })
-                        .sum();
-                    sum / channels as f32
-                })
-                .collect();
-            return Some((samples, rate));
-        }
-        // Chunks are padded to an even length.
-        at = body.checked_add(size + (size & 1))?;
-    }
-    None
 }
 
 #[cfg(test)]
@@ -311,41 +252,6 @@ mod tests {
         let e = a.envelope(2.0);
         assert_eq!(e.len(), 2);
         assert!((e[1] - 1.0).abs() < 1e-6 && (e[0] - 0.2).abs() < 1e-3, "{e:?}");
-    }
-
-    /// A WAV as a recorder leaves it mid-recording: sizes still 0, a padding chunk before the sound.
-    fn growing_wav(samples: &[f32], rate: u32) -> Vec<u8> {
-        let mut b = Vec::new();
-        b.extend_from_slice(b"RIFF\0\0\0\0WAVE");
-        b.extend_from_slice(b"fmt ");
-        b.extend_from_slice(&16u32.to_le_bytes());
-        b.extend_from_slice(&1u16.to_le_bytes()); // PCM
-        b.extend_from_slice(&1u16.to_le_bytes()); // mono
-        b.extend_from_slice(&rate.to_le_bytes());
-        b.extend_from_slice(&(rate * 2).to_le_bytes());
-        b.extend_from_slice(&2u16.to_le_bytes());
-        b.extend_from_slice(&16u16.to_le_bytes());
-        b.extend_from_slice(b"FLLR");
-        b.extend_from_slice(&5u32.to_le_bytes());
-        b.extend_from_slice(&[0; 6]); // 5 bytes, padded to 6
-        b.extend_from_slice(b"data\0\0\0\0");
-        for s in samples {
-            b.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-        }
-        b
-    }
-
-    #[test]
-    fn a_wav_still_being_recorded_is_read_to_its_end() {
-        let wav = growing_wav(&[0.0, 0.5, -0.5, 0.25], 16_000);
-        let (samples, rate) = read_growing_wav(&wav).unwrap();
-        assert_eq!(rate, 16_000);
-        assert_eq!(samples.len(), 4);
-        assert!((samples[1] - 0.5).abs() < 1e-3 && (samples[2] + 0.5).abs() < 1e-3, "{samples:?}");
-        // A half-written last sample is left out; anything that isn't a WAV is refused.
-        assert_eq!(read_growing_wav(&wav[..wav.len() - 1]).unwrap().0.len(), 3);
-        assert_eq!(read_growing_wav(b"RIFF\0\0\0\0WAVE"), None, "no data yet");
-        assert_eq!(read_growing_wav(b"not a wav file at all"), None);
     }
 
     /// The models folder for the round-trip test: `ALFRED_MODELS`, else Alfred's own.
@@ -398,13 +304,5 @@ mod tests {
         for word in ["saved", "note", "milk"] {
             assert!(heard.contains(word), "heard {heard:?}");
         }
-
-        // Live text: the first part of the sentence, from a file still being written.
-        let path = std::env::temp_dir().join(format!("alfred-growing-{}.wav", std::process::id()));
-        let half = &audio.samples[..audio.samples.len() * 3 / 5];
-        std::fs::write(&path, growing_wav(half, audio.sample_rate)).unwrap();
-        let so_far = listener.transcribe_partial(&path).to_lowercase();
-        std::fs::remove_file(&path).ok();
-        assert!(so_far.contains("saved") && !so_far.contains("milk"), "heard so far {so_far:?}");
     }
 }

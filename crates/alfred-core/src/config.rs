@@ -152,6 +152,10 @@ pub struct LlmConfig {
     pub thinking: Thinking,
     /// The most tokens a thinking answer may use, thoughts included.
     pub think_tokens: u32,
+    /// Another model on the same server that thinks hard questions through, such as a small one that thinks
+    /// fast while a larger `model` decides. Unset, `model` does both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub think_model: Option<String>,
 }
 
 impl Default for LlmConfig {
@@ -168,6 +172,7 @@ impl Default for LlmConfig {
             history_turns: 3,
             thinking: Thinking::Auto,
             think_tokens: 2048,
+            think_model: None,
         }
     }
 }
@@ -323,6 +328,18 @@ mod tests {
         assert_eq!(c.llm.base_url, "http://127.0.0.1:11434");
         assert_eq!(c.search.engine, "duckduckgo");
         assert!(c.voice.speak);
+    }
+
+    #[test]
+    fn a_thinking_model_is_optional() {
+        assert_eq!(Config::default().llm.think_model, None);
+        assert!(!toml::to_string(&Config::default()).unwrap().contains("think_model"), "unset, it stays out of the file");
+        let c: Config = toml::from_str("[llm]\nmodel = \"gemma4:26b\"\nthink_model = \"gemma4:e4b\"\n").unwrap();
+        assert_eq!(c.llm.think_model.as_deref(), Some("gemma4:e4b"));
+        let thinker = crate::llm::thinker_from_config(&c.llm).expect("a separate thinker");
+        assert!(thinker.describe().contains("gemma4:e4b"), "{}", thinker.describe());
+        let same = toml::from_str::<Config>("[llm]\nmodel = \"gemma4:e4b\"\nthink_model = \"gemma4:e4b\"\n").unwrap();
+        assert!(crate::llm::thinker_from_config(&same.llm).is_none(), "the same model needs no second one");
     }
 
     #[test]

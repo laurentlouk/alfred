@@ -110,6 +110,8 @@ pub struct Agent {
     /// Shortcut names (folded) that may run without asking, even when the model chose them.
     trusted: Vec<String>,
     thinking: Thinking,
+    /// The model that thinks hard questions through, when it isn't the one that decides.
+    thinker: Option<Box<dyn ChatModel>>,
 }
 
 impl Agent {
@@ -124,12 +126,19 @@ impl Agent {
             catalog: Catalog::default(),
             trusted: Vec::new(),
             thinking: Thinking::Auto,
+            thinker: None,
         }
     }
 
     /// When the model thinks before answering in words.
     pub fn with_thinking(mut self, thinking: Thinking) -> Self {
         self.thinking = thinking;
+        self
+    }
+
+    /// Think hard questions through with another model: a small one thinks fast while a larger one decides.
+    pub fn with_thinker(mut self, thinker: Box<dyn ChatModel>) -> Self {
+        self.thinker = Some(thinker);
         self
     }
 
@@ -332,7 +341,8 @@ impl Agent {
                     on(Event::Reasoning);
                     let mut deep = messages.clone();
                     deep[0] = ChatMessage::new(Role::System, REASONING_PROMPT);
-                    if let Ok(r) = model.reason(&deep)
+                    let thinker = self.thinker.as_deref().unwrap_or(model.as_ref());
+                    if let Ok(r) = thinker.reason(&deep)
                         && !r.content.trim().is_empty()
                     {
                         words = r.content;

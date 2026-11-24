@@ -37,11 +37,14 @@ pub fn build(cfg: &Config) -> (Agent, MacExecutor) {
         exec = exec.with_web_hands(Arc::new(web));
         catalog.browser = true;
     }
-    let agent = Agent::new(Some(llm::from_config(&cfg.llm)))
+    let mut agent = Agent::new(Some(llm::from_config(&cfg.llm)))
         .with_history_turns(cfg.llm.history_turns)
         .with_tool_mode(cfg.llm.tool_mode)
         .with_thinking(cfg.llm.thinking)
         .with_catalog(catalog)
         .with_trusted_shortcuts(&cfg.shortcuts.trusted);
+    if let Some(thinker) = llm::thinker_from_config(&cfg.llm) {
+        agent = agent.with_thinker(thinker);
+    }
     (agent, exec)
 }
