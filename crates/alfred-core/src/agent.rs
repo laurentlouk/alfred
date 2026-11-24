@@ -31,10 +31,10 @@ fn native_prompt(catalog: &Catalog) -> String {
         p.push_str(" The user's Shortcuts run with run_shortcut; pick the one whose name fits the request.");
     }
     if catalog.hands {
-        p.push_str(" For anything inside another app with no tool of its own (Slack, WhatsApp, archiving an email), use use_app.");
+        p.push_str(" For anything inside another app with no tool of its own (Slack, WhatsApp, archiving an email), and for writing a prompt or message in an app the user names (prompt Claude, ask ChatGPT, message someone in Slack), use use_app with the whole prompt in the task, even when the prompt asks for news or facts.");
     }
     if catalog.browser {
-        p.push_str(" For a task on websites that takes more than one step (finding something on a site, reading a page, comparing prices), use use_browser; a plain search stays web_search and opening a site stays open_url.");
+        p.push_str(" For a task on websites that takes more than one step (finding something on a site, reading a page, comparing prices), and for any question or step about a page that is open, use use_browser (tab yours for the page the user is looking at, alfred for Alfred's own tab, which stays on the last site it opened); a plain search stays web_search and opening a site stays open_url.");
     }
     p
 }
@@ -287,6 +287,14 @@ impl Agent {
                 format!("You are Alfred, a warm, discreet assistant on the user's Mac. {}", decision_guide_for(&self.catalog))
             }
             ToolMode::Native => native_prompt(&self.catalog),
+        };
+        // Where the user is and what Alfred's tab shows, so "this page", "here" and follow-ups about a site
+        // resolve. Only names and hosts: nothing written by others.
+        let system = match exec.context().describe() {
+            Some(now) => format!(
+                "{system}\n{now} When the user says this, here, this page, this app or what you see, they mean what they are looking at; a follow-up about the site Alfred opened goes to Alfred's tab."
+            ),
+            None => system,
         };
         let mut messages = vec![ChatMessage::new(Role::System, system)];
         for (user, alfred) in &self.history {

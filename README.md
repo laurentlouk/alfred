@@ -16,7 +16,8 @@ Summon it, say or type what you need, and it opens your apps, saves notes, adds 
 - **Always at hand.** Alfred is an orb that floats over your windows, on your main display and on every desktop, with no window around it. <kbd>⌃⇧Space</kbd> brings it forward, it's in the Dock and <kbd>⌘Tab</kbd> like any app, and <kbd>esc</kbd> puts it away.
 - **Just say "Alfred".** "Alfred, what time is it?" works from across the room, like "Hey Siri" (turn on `wake_word`). Or click the orb (<kbd>⌘L</kbd>) and speak. Your words appear as you say them, background noise is cleaned out, and Alfred answers about half a second after you stop. Say "Alfred" while it talks to cut it short.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches the web, opens links, tells the time.
-- **It answers from the web.** "What's the weather in Paris?" opens the results in Alfred's own browser window, reads them, and tells you.
+- **It answers from the web.** "What's the weather in Paris?" opens the results in Alfred's own browser tab, reads them, and tells you; when they don't say, it keeps looking, as you would.
+- **It knows where you are.** Alfred sees which app you're in and, in a browser, which site, so "this page", "here" and follow-ups just work: "go to the Pokémon website", then "what Pokémon do you see?", then "open the Pokédex and tell me the first one". "Prompt Claude for me: …" writes it in Claude.
 - **It thinks when it has to.** "Good evening" is answered at once; "I save 150 euros a month, when do I reach 2,000?" is thought through first.
 - **It reads your mail and drafts replies.** "Read my last email", "reply to it saying I'll be there at 3": the reply opens in Mail for you to check and send. Alfred never sends mail.
 - **It runs your Shortcuts.** "Run Good Morning", or just "start the vacuum" when you have a shortcut for it.
@@ -83,6 +84,7 @@ alfred ask "open Notes and save buy oat milk"
 | --- | --- |
 | `alfred` | Open Alfred |
 | `alfred ask TEXT` | Do what TEXT asks. `--dry-run` shows the action instead, `--yes` confirms, `--speak` says the answer |
+| `alfred chat` | A conversation: one request per line, typed or piped in, each knowing the ones before it |
 | `alfred say TEXT` | Speak with Alfred's voice |
 | `alfred listen FILE.wav` | Transcribe a recording |
 | `alfred setup` | Write the config, download the models, pull the language model |
@@ -190,7 +192,7 @@ brew install agent-browser
 
 A question that needs the web ("what's the weather in Paris", "who won the last Champions League final") opens the search results in that window, and Alfred reads them and answers in a sentence, saying where the answer came from. A task that takes a few steps on a site ("on amazon.fr, find the price of the Kindle Paperwhite", "compare the AirPods Pro on apple.com and fnac.com") runs the same look-decide-act loop as on screen, at most 10 steps, with the model from `[desktop] model`. Alfred only opens an address you said; it follows links on the page, goes back or searches, but never opens an address it read on a page. It never types passwords, card numbers or sign-in codes, and a Place order, Book, Subscribe or Sign up click comes back to you as a Yes/No question. Cookie walls are declined ("Reject all"); a robot check is left for you to answer in the window. The window stays open on the last page so you can see it and take over.
 
-**In your own Chrome.** Already signed in everywhere in Chrome? Set `[browser] use_chrome = true` and Alfred works in your Chrome instead, in a tab of its own labelled for it: it never reads, navigates or clicks your other tabs. Chrome lets it in once you turn on remote debugging at `chrome://inspect/#remote-debugging` (Chrome 144 or later), asks you to allow Alfred when it connects, and shows a banner while it does. Signed in, Alfred acts as you, so a Reply, Share, Invite, Authorize or Follow click waits for your yes too, as do the clicks above.
+**In your own Chrome.** Already signed in everywhere in Chrome? Set `[browser] use_chrome = true` and Alfred works in your Chrome instead, in a tab of its own labelled for it, where the sites you ask for open, so follow-ups can look at them. It works in one of your own tabs only when you point at it ("this page", "scroll down here"), and never reads, navigates or clicks your other tabs. Chrome lets it in once you turn on remote debugging at `chrome://inspect/#remote-debugging` (Chrome 144 or later), asks you to allow Alfred when it connects, and shows a banner while it does. Signed in, Alfred acts as you, so a Reply, Share, Invite, Authorize or Follow click waits for your yes too, as do the clicks above.
 
 ## Configuration
 

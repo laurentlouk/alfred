@@ -7,6 +7,7 @@ pub mod action;
 pub mod agent;
 pub mod catalog;
 pub mod config;
+pub mod context;
 pub mod eval;
 pub mod llm;
 pub mod normalize;

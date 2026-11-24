@@ -41,6 +41,8 @@ struct WebState {
     shared: bool,
     /// Labels of the tabs Alfred opened.
     tabs: Vec<String>,
+    /// The user's own tab: its target id, and the page it shows.
+    user_tab: Option<(String, String)>,
 }
 
 const GOOGLE_TEXT: &str = "Accessibility links\n\nSkip to main content\n\n# Search Results\n\nWeather\n\nParis, France\n\nTuesday 14:00\n\nCloudy\n\n12 °C\n\nPrecipitation: 10%";
@@ -199,6 +201,14 @@ impl Browser for FakeWeb {
                     }
                 }
             }
+            ["tab", "list"] => {
+                let mut tabs: Vec<Value> = s.tabs.iter().map(|l| json!({"label": l, "targetId": format!("T-{l}"), "url": s.url})).collect();
+                if let Some((id, url)) = &s.user_tab {
+                    tabs.push(json!({"label": null, "targetId": id, "url": url}));
+                }
+                return Ok(json!({"tabs": tabs}));
+            }
+            ["tab", id] if s.user_tab.as_ref().is_some_and(|(t, _)| t == id) => return Ok(json!({"tabId": "t1"})),
             ["tab", label] if !s.tabs.iter().any(|t| t == label) => {
                 return Err(BrowserError { message: format!("Tab '{label}' not found"), retry_safe: true });
             }
@@ -712,16 +722,40 @@ fn when_the_results_dont_say_the_top_organic_result_is_read() {
 }
 
 #[test]
-fn at_most_two_result_pages_are_read_then_the_results_are_shown() {
+fn two_result_pages_are_read_then_alfred_looks_further_before_giving_up() {
     let web = Shared::default();
     web.0.state.lock().unwrap().no_card = true;
+    // The results and both pages don't say, and looking further finds nothing either.
     let (h, model) = answering(&web, vec![not_found(), not_found(), not_found()]);
     let o = h.answer("weather in Paris").unwrap();
-    assert_eq!(o.summary, "I couldn't find the answer in Google's results or the top pages; the results are open in the browser.");
+    assert_eq!(o.summary, "I couldn't find the answer in Google's results or the pages I looked at; the results are open in the browser.");
     assert!(web.clicked("@e21") && web.clicked("@e23"));
     assert_eq!(web.log().iter().filter(|c| c[0] == "click").count(), 2);
-    assert_eq!(model.seen.lock().unwrap().len(), 3, "the results, then two pages");
+    let seen = model.seen.lock().unwrap();
+    assert!(seen.len() > 3, "the results, two pages, then steps of its own");
+    assert!(seen[3][1].content.contains("Find the answer to this question: weather in Paris"), "{:?}", seen[3][1]);
     assert_eq!(page_now(&web), "google-links", "back on the results");
+}
+
+#[test]
+fn when_the_top_pages_dont_say_alfred_navigates_until_it_finds_the_answer() {
+    let web = Shared::default();
+    web.0.state.lock().unwrap().no_card = true;
+    let plan = Scripted::calls("plan", json!({"steps": ["Open another result", "Read it"]}));
+    let (h, _) = answering(
+        &web,
+        vec![
+            not_found(),
+            not_found(),
+            not_found(),
+            plan,
+            step("click", json!({"ref": "e23"})),
+            step("done", json!({"note": "It's 12°C and cloudy in Paris, according to bbc.com."})),
+        ],
+    );
+    let o = h.answer("weather in Paris").unwrap();
+    assert_eq!(o.summary, "It's 12°C and cloudy in Paris, according to bbc.com.", "the answer alone, without the steps");
+    assert_eq!(page_now(&web), "bbc", "the window ends where the answer was found");
 }
 
 #[test]
@@ -878,4 +912,79 @@ fn in_the_users_chrome_a_confirmed_click_happens_only_in_alfreds_tab() {
     let err = h.press("link", "Simula").unwrap_err();
     assert!(err.contains("Alfred's tab"), "{err}");
     assert!(!web.ran("click"));
+}
+
+#[test]
+fn in_the_users_chrome_a_site_they_ask_for_opens_in_alfreds_tab_and_is_remembered() {
+    let web = in_chrome();
+    let (h, _) = answering(&web, vec![]);
+    assert!(h.in_users_browser());
+    assert_eq!(h.page(), None, "nothing opened yet; the user's own page is never Alfred's");
+    assert_eq!(web.log()[0], args(["tab", "alfred"]), "looked for a tab left by an earlier run");
+    let looked = web.log().len();
+    assert_eq!(h.page(), None);
+    assert_eq!(web.log().len(), looked, "only once");
+    assert_eq!(h.show(MAIN).unwrap().summary, "I've opened en.wikipedia.org.");
+    assert!(web.log().contains(&args(["tab", "new", "--label", "alfred", MAIN])));
+    assert_eq!(h.page().as_deref(), Some(MAIN), "so a follow-up knows where Alfred's tab is");
+    assert!(h.show("file:///etc/passwd").is_err());
+}
+
+#[test]
+fn a_task_on_the_users_page_happens_in_their_tab_and_so_does_the_confirmed_click() {
+    let web = in_chrome();
+    web.0.state.lock().unwrap().user_tab = Some(("T-user".into(), RESULTS.into()));
+    let (h, _) = hands(&web, vec![step("done", json!({"note": "The first result is Simula."}))], 10);
+    let o = h.browse_theirs("what is the first result", RESULTS).unwrap();
+    assert_eq!(o.summary, "The first result is Simula.");
+    assert!(web.log().contains(&args(["tab", "T-user"])), "switched to the user's tab by its id");
+    assert!(!web.ran("open") && !web.log().iter().any(|c| c.len() > 1 && c[1] == "new"), "no new tab, no navigation");
+    assert_eq!(h.page(), None, "the user's page isn't taken for Alfred's");
+    let before = web.log().len();
+    h.press("link", "Simula").unwrap();
+    assert_eq!(web.log()[before], args(["tab", "T-user"]), "the confirmed click happens in their tab too");
+}
+
+#[test]
+fn without_their_chrome_alfred_opens_the_users_page_in_its_own_window() {
+    let web = Shared::default();
+    let (h, _) = hands(&web, vec![step("done", json!({"note": "It's the Wikipedia main page."}))], 10);
+    let o = h.browse_theirs("what is this page", MAIN).unwrap();
+    assert!(
+        o.summary.starts_with("It's the Wikipedia main page. In the browser I opened en.wikipedia.org, the page you're on"),
+        "{}",
+        o.summary
+    );
+    assert!(web.log().contains(&args(["open", MAIN])));
+}
+
+#[test]
+fn when_the_user_is_looking_at_alfreds_tab_the_work_happens_there() {
+    let web = in_chrome();
+    let (h, _) = hands(&web, vec![step("done", json!({"note": "It's the Wikipedia main page."}))], 10);
+    h.show(MAIN).unwrap();
+    // The user switches to Alfred's tab and asks about "this page".
+    let o = h.browse_theirs("what is this page", MAIN).unwrap();
+    assert_eq!(o.summary, "It's the Wikipedia main page.");
+    assert!(web.log().iter().filter(|c| c[..] == args(["tab", "alfred"])[..]).count() >= 2, "worked in Alfred's own tab");
+    assert_eq!(h.page().as_deref(), Some(MAIN), "still Alfred's tab, so it's still remembered");
+}
+
+#[test]
+fn a_run_that_stops_short_reads_the_page_it_reached_before_giving_up() {
+    let web = Shared::default();
+    {
+        let mut s = web.0.state.lock().unwrap();
+        s.page = "google-links".into();
+        s.url = "https://www.google.com/search?q=weather+in+Paris".into();
+    }
+    // One step only: it opens Météo-France, then runs out of steps without saying done.
+    let (h, model) = hands(&web, vec![step("click", json!({"ref": "e21"})), found("It's 12°C and cloudy in Paris.")], 1);
+    let o = h.browse("open the first result and tell me the weather in Paris", None).unwrap();
+    assert_eq!(
+        o.summary,
+        "It's 12°C and cloudy in Paris. That's from meteofrance.com. In the browser I clicked link \"Météo Paris - Météo-France\"."
+    );
+    let read = model.seen.lock().unwrap().last().unwrap()[1].content.clone();
+    assert!(read.contains("12°C, nuageux"), "the page it reached was read: {read}");
 }

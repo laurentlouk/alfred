@@ -129,6 +129,7 @@ pub fn tools_json_for(catalog: &Catalog) -> Value {
                     "parameters": { "type": "object", "properties": {
                         "text": { "type": "string", "description": "The task, in one sentence." },
                         "url": { "type": "string", "description": "Only if the user gave a site's address: where to start." },
+                        "tab": { "type": "string", "enum": ["alfred", "yours"], "description": "yours: the page the user is looking at (this page, here); alfred (the default): Alfred's own tab, which stays on the last site it opened." },
                     }, "required": ["text"] },
                 }
             }));
@@ -193,6 +194,7 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
             "from": { "type": "string", "maxLength": 100 },
             "reply": { "type": "string", "maxLength": 600 },
             "hard": { "type": "boolean" },
+            "tab": { "type": "string", "enum": ["alfred", "yours"] },
         },
         "required": ["action"],
     });
@@ -212,10 +214,10 @@ pub fn decision_guide_for(catalog: &Catalog) -> String {
         ));
     }
     if catalog.hands {
-        guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as changing a setting (field app: the app; field text: the task in one sentence).");
+        guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as changing a setting, or writing a prompt or message in an app the user names, like prompting Claude or messaging in Slack, even when the prompt asks for news or facts (field app: the app; field text: the task in one sentence, with the whole prompt).");
     }
     if catalog.browser {
-        guide.push_str("\nuse_browser: a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices (field text: the task in one sentence; field url only if the user gave the site's address). A plain search stays web_search, and opening a site stays open_url.");
+        guide.push_str("\nuse_browser: a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices, and any question or step about a page that is open (field text: the task in one sentence, with what the user wants from the page; field url only if the user gave the site's address; field tab: yours for the page the user is looking at, alfred for Alfred's own tab, which stays on the last site it opened). A plain search stays web_search, and opening a site stays open_url.");
     }
     guide
 }
@@ -382,6 +384,13 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
             let task = string_arg(&args, &["text", "task", "goal", "instruction", "query"])
                 .or_else(|| (!utterance.trim().is_empty()).then(|| utterance.trim().to_string()))
                 .ok_or("use_browser needs the task in \"text\".")?;
+            // The page the user is looking at: their own tab, never with an address.
+            let theirs = string_arg(&args, &["tab", "where", "on"]).is_some_and(|t| {
+                matches!(crate::catalog::fold(&t).as_str(), "yours" | "your" | "user" | "users" | "theirs" | "their" | "user's")
+            });
+            if theirs {
+                return Ok(Action::UseTheirTab { task });
+            }
             let url = string_arg(&args, &["url", "link", "website", "site", "address", "page"]).and_then(|raw| said_url(&raw, utterance));
             Ok(Action::UseBrowser { task, url })
         }
@@ -598,6 +607,33 @@ mod tests {
             action_from_call_in(&n, &a, "read me the top story on hacker news", &catalog()).unwrap(),
             Action::UseBrowser { task: "read the top story".into(), url: None }
         );
+    }
+
+    #[test]
+    fn a_task_on_the_users_own_page_goes_to_their_tab() {
+        // "this page", "here": the page the user is looking at, never with an address.
+        assert_eq!(
+            action_from_call_in(
+                "use_browser",
+                &json!({"text": "click Next", "tab": "yours", "url": "x.com"}),
+                "click next here",
+                &catalog()
+            )
+            .unwrap(),
+            Action::UseTheirTab { task: "click Next".into() }
+        );
+        let (n, a) = decision_to_call(&json!({"action": "use_browser", "text": "what pokemon is shown", "tab": "user"})).unwrap();
+        assert_eq!(
+            action_from_call_in(&n, &a, "what is the pokemon you see?", &catalog()).unwrap(),
+            Action::UseTheirTab { task: "what pokemon is shown".into() }
+        );
+        // Alfred's own tab stays the default.
+        assert_eq!(
+            action_from_call_in("use_browser", &json!({"text": "what pokemon is shown", "tab": "alfred"}), "what is it", &catalog())
+                .unwrap(),
+            Action::UseBrowser { task: "what pokemon is shown".into(), url: None }
+        );
+        assert_eq!(decision_schema_for(&catalog())["properties"]["tab"]["enum"], json!(["alfred", "yours"]));
     }
 
     #[test]

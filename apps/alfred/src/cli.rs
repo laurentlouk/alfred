@@ -19,6 +19,8 @@ USAGE
       --dry-run                 show the actions instead of running them
       --yes                     answer yes when Alfred asks to confirm (including a Send it stopped before)
       --speak                   also say the answer out loud
+  alfred chat [--dry-run]     a conversation: one request per line (typed, or piped in), each knowing
+                              the ones before it and what Alfred's browser shows
   alfred say TEXT             speak TEXT with Alfred's voice
   alfred listen FILE.wav      transcribe a recording
   alfred setup                write the config, download the voice models, pull the language model
@@ -38,6 +40,7 @@ pub fn run(args: &[String]) -> i32 {
     let rest: Vec<String> = args[1..].to_vec();
     let result = match args[0].as_str() {
         "ask" => ask(&rest),
+        "chat" => chat(&rest),
         "say" => say(&rest.join(" ")),
         "listen" => listen(&rest),
         "setup" => setup(),
@@ -74,7 +77,8 @@ fn ask(args: &[String]) -> Result<(), String> {
     }
     let cfg = load_config()?;
     let (mut agent, mac) = crate::wiring::build(&cfg);
-    let dry = DryRun::new();
+    // A dry run acts on nothing, but sees where the user is, so it decides as the real run would.
+    let dry = DryRun::new().with_context(mac.context());
     let exec: &dyn Executor = if flag("--dry-run") { &dry } else { &mac };
     let mut show = |e: Event| match e {
         Event::Thinking => eprintln!("… thinking with {}", agent_label(&cfg)),
@@ -99,6 +103,44 @@ fn ask(args: &[String]) -> Result<(), String> {
     }
     if flag("--speak") {
         say(&turn.reply)?;
+    }
+    Ok(())
+}
+
+/// A conversation on the terminal: each line is a request to the same agent, so follow-ups ("what do you
+/// see there?") know what came before. Confirmations are asked on the terminal, or refused when piped.
+fn chat(args: &[String]) -> Result<(), String> {
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+    let cfg = load_config()?;
+    let (mut agent, mac) = crate::wiring::build(&cfg);
+    // A dry run acts on nothing, but sees where the user is, so it decides as the real run would.
+    let dry = DryRun::new().with_context(mac.context());
+    let exec: &dyn Executor = if dry_run { &dry } else { &mac };
+    let mut show = |e: Event| match e {
+        Event::Thinking => eprintln!("… thinking"),
+        Event::Reasoning => eprintln!("… thinking it through"),
+        Event::Acting(a) => eprintln!("→ {}", a.progress_label()),
+        Event::Acted(d) => match &d.result {
+            Ok(_) => eprintln!("✓ {}", d.action.tool_name()),
+            Err(e) => eprintln!("✗ {}: {e}", d.action.tool_name()),
+        },
+    };
+    let interactive = std::io::stdin().is_terminal();
+    for line in std::io::stdin().lock().lines() {
+        let text = line.map_err(|e| e.to_string())?;
+        if text.trim().is_empty() {
+            continue;
+        }
+        if !interactive {
+            println!("you: {}", text.trim());
+        }
+        let mut turn = agent.handle(text.trim(), exec, &mut show);
+        if turn.pending.is_some() {
+            println!("alfred: {}", turn.reply);
+            let yes = interactive && confirm_on_terminal();
+            turn = agent.answer_confirmation(yes, exec, &mut show);
+        }
+        println!("alfred: {}", turn.reply);
     }
     Ok(())
 }

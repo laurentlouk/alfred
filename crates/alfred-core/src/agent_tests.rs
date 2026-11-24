@@ -500,3 +500,34 @@ fn a_separate_thinker_answers_the_hard_questions() {
     assert_eq!(reasoned(&thinker), 1, "the thinker does");
     assert!(thinker.seen.lock().unwrap()[0][0].content.contains("Think the question through"));
 }
+
+#[test]
+fn the_model_knows_what_the_user_is_looking_at_and_what_alfreds_tab_shows() {
+    let model = std::sync::Arc::new(Scripted::new([Scripted::calls(
+        "use_browser",
+        json!({"text": "say which Pokémon the page shows", "tab": "alfred"}),
+    )]));
+    let browser = crate::catalog::Catalog { browser: true, ..Default::default() };
+    let mut a = Agent::new(Some(Box::new(model.clone()))).with_catalog(browser);
+    let d = DryRun::new().with_context(crate::context::Context::new(
+        Some("Google Chrome"),
+        Some("https://www.youtube.com/"),
+        Some("https://www.pokemon.com/us/"),
+    ));
+    a.handle("what is the pokemon you see?", &d, &mut quiet());
+    let system = model.seen.lock().unwrap()[0][0].content.clone();
+    assert!(
+        system.contains("Right now the user is in Google Chrome, looking at youtube.com. Alfred's own browser tab shows pokemon.com."),
+        "{system}"
+    );
+    assert_eq!(d.actions(), vec![Action::UseBrowser { task: "say which Pokémon the page shows".into(), url: None }]);
+}
+
+#[test]
+fn routed_requests_never_ask_for_the_context() {
+    // A router hit needs no model, so the Mac isn't asked where the user is.
+    let mut a = agent_with(vec![]);
+    let d = DryRun::new().with_context(crate::context::Context::new(Some("Claude"), None, None));
+    a.handle("open notes", &d, &mut quiet());
+    assert_eq!(d.context_reads(), 0);
+}

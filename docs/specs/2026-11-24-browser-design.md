@@ -52,7 +52,8 @@ slow and shallow, and they never type with real keystrokes.
    asks the user to allow each new connection, and shows a "controlled by automated test software"
    banner while attached. Alfred works in one tab of its own, labelled `alfred`: each request switches to
    it, or opens it when it's gone (`tab new --label alfred [url]`), so the user's tabs are never read,
-   navigated or clicked, and a confirmed click happens in that tab or not at all. The guards hold as they
+   navigated or clicked unless the user points at their page (decision C3), and a confirmed click happens
+   in the tab the run stopped in or not at all. The guards hold as they
    are, plus what speaks for the user once signed in (reply, comment, share, invite, authorize, allow,
    upload, save changes, follow). When Chrome can't be reached, Alfred says how to allow it.
    Tested live (Chrome 158, the owner's signed-in profile): the first connection waited for the owner's
@@ -100,6 +101,46 @@ slow and shallow, and they never type with real keystrokes.
 12. **The browser stays open** at the end, on the last page.
 13. **The model** is `[desktop] model` (`qwen3:8b`), with the same larger context and reply caps, because
     every decision is structured output.
+
+## Conversation and what the user is looking at (added 2026-11-24, at the owner's request)
+
+The owner asked for three things: a follow-up should know the site Alfred opened ("go to the Pokémon
+website", then "what Pokémon do you see?"); Alfred should see the app or page the user is in ("prompt
+Claude for us", "scroll down here"); and a question should be navigated until it is answered, unless the
+user named a page or gave steps.
+
+- **C1. The context is names and hosts.** Before the model decides (never for a request the router
+  handles), the executor reads the app the user was in, the first one in `lsappinfo visibleProcessList`
+  that isn't Alfred, by bundle id, and, when that app is a browser Alfred knows (Chrome, Brave, Edge,
+  Chromium, Vivaldi, Arc, Safari), its active tab's address through a constant AppleScript (the app's
+  name passed in `argv`). Add the host of Alfred's own tab, and the model gets one line: "Right now the
+  user is in Google Chrome, looking at youtube.com. Alfred's own browser tab shows pokemon.com." Each read
+  is capped at 3 s. `alfred ask --dry-run` and `alfred chat --dry-run` read it too, so they decide as the
+  real run would. *Rejected:* window titles and page text (written by others, they could carry
+  instructions); polling the frontmost app (the front-to-back order answers at the time of the request).
+- **C2. Alfred's tab is remembered.** The hands keep the last address they saw in Alfred's own tab (never
+  the user's), and, after a restart, look the tab up once. In Chrome mode, "open a site" opens it in that
+  tab, so a follow-up can look at it; in Alfred's own window mode a site still opens in the default
+  browser, and a follow-up reaches it through C3.
+- **C3. The user's page.** `use_browser` takes `tab`: `alfred` (the default) or `yours`, which becomes
+  `Action::UseTheirTab`. In Chrome mode Alfred finds the tab showing that address (`tab list`, matched by
+  address, its own tab first when that is what the user is looking at), switches to it by target id and
+  works there; a confirmed click happens in the same tab. Otherwise it opens the same address in its own
+  window. That address is the one the user chose to look at, never one read from a page.
+- **C4. Questions keep navigating.** When the results and their top two pages don't answer, the step loop
+  takes over with the question ("Find the answer to this question: …") and the answer it ends with is said
+  alone, without the steps.
+- **C5. A run that stops short reads where it is.** Going in circles or out of steps, the loop reads the
+  page it reached and answers from it when it can, before reporting that it couldn't finish.
+- **C6. Writing in an app is an app task.** "Prompt Claude for me: summarize the AI news" is `use_app`
+  with the whole prompt, not a web search, even when the prompt asks for news or facts.
+
+Tested live in the owner's signed-in Chrome with `alfred chat`: "I would like to go to the pokemon
+website" opened pokemon.com in Alfred's tab; "what is the pokemon you see?" answered "The main Pokémon
+featured on this page is Zamazenta" (46 s for both turns); after a restart, "what pokemon do you see on
+the site?" listed fifteen; "open the pokedex on the pokemon site and tell me the first pokemon listed"
+answered Bulbasaur in 58.6 s (before C5 it found Bulbasaur, then went in circles and reported a failure).
+`alfred eval --model` kept 96% on requests and 95% on apps.
 
 ## Spoken search answers
 

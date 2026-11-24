@@ -36,6 +36,9 @@ pub enum Action {
     /// Do a task on websites that takes more than one step (needs `agent-browser`), starting at `url` when
     /// the user gave one.
     UseBrowser { task: String, url: Option<String> },
+    /// Do a task on the page the user is looking at in their own browser ("this page", "here"): in their
+    /// tab when Alfred works in their Chrome, else on the same page in Alfred's tab.
+    UseTheirTab { task: String },
     /// Read the newest email in Mail's inbox, or the newest from `from` (part of a name or an address).
     ReadMail { from: Option<String> },
     /// Open a reply to the newest email (from `from` when given) with `text` in it. Alfred never sends
@@ -70,7 +73,7 @@ impl Action {
             Action::RunShortcut { .. } => "run_shortcut",
             Action::UseApp { .. } => "use_app",
             Action::PressButton { .. } => "press_button",
-            Action::UseBrowser { .. } => "use_browser",
+            Action::UseBrowser { .. } | Action::UseTheirTab { .. } => "use_browser",
             Action::ReadMail { .. } => "read_mail",
             Action::DraftReply { .. } => "reply_mail",
         }
@@ -89,6 +92,7 @@ impl Action {
                 | Action::UseApp { .. }
                 | Action::PressButton { .. }
                 | Action::UseBrowser { .. }
+                | Action::UseTheirTab { .. }
         )
     }
 
@@ -116,6 +120,7 @@ impl Action {
             Action::PressButton { app, name, .. } => format!("Clicking “{}” in {}", clip(name, 24), place(app)),
             Action::UseBrowser { url: Some(u), .. } => format!("Browsing {}", host_of(u)),
             Action::UseBrowser { url: None, .. } => "Using the browser".into(),
+            Action::UseTheirTab { .. } => "Working on your page".into(),
             Action::ReadMail { from: None } => "Reading your latest email".into(),
             Action::ReadMail { from: Some(f) } => format!("Reading the latest email from {}", clip(f, 24)),
             Action::DraftReply { from: None, .. } => "Drafting a reply".into(),
@@ -138,6 +143,7 @@ impl Action {
             Action::PressButton { app, name, .. } => format!("Click “{}” in {}", clip(name, 32), place(app)),
             Action::UseBrowser { task, url: Some(u) } => format!("On {}: {}", host_of(u), clip(task, 40)),
             Action::UseBrowser { task, url: None } => format!("In the browser: {}", clip(task, 40)),
+            Action::UseTheirTab { task } => format!("On your page: {}", clip(task, 40)),
             Action::ReadMail { from: None } => "Read the latest email".into(),
             Action::ReadMail { from: Some(f) } => format!("Read the latest email from {}", clip(f, 28)),
             Action::DraftReply { from: None, .. } => "Draft a reply to the latest email".into(),
@@ -172,6 +178,7 @@ impl Action {
             Action::UseApp { app, .. } => format!("Done in {app}."),
             Action::PressButton { app, name, .. } => format!("I've clicked “{name}” in {}.", place(app)),
             Action::UseBrowser { .. } => "Done in the browser.".into(),
+            Action::UseTheirTab { .. } => "Done on your page.".into(),
             Action::ReadMail { .. } => "I've read you the latest email.".into(),
             Action::DraftReply { .. } => "I've opened a reply in Mail for you to check and send.".into(),
         }
@@ -250,17 +257,41 @@ pub trait WebHands: Send + Sync {
     /// Search the web for `query`, leave the results open, and answer from them in a sentence or two. An
     /// error means the results couldn't be read, so the caller opens them some other way.
     fn answer(&self, query: &str) -> Result<Outcome, String>;
+    /// Open `url` in Alfred's tab and leave it there. An error means the caller opens it some other way.
+    fn show(&self, url: &str) -> Result<Outcome, String> {
+        Err(format!("I can't open {url} in my tab."))
+    }
+    /// Do `task` on the page the user is looking at, whose address is `url`: in their own tab when Alfred
+    /// works in their browser, else on the same page in Alfred's tab.
+    fn browse_theirs(&self, task: &str, url: &str) -> Result<Outcome, String> {
+        self.browse(task, Some(url))
+    }
+    /// The address Alfred's tab shows, once it has opened one.
+    fn page(&self) -> Option<String> {
+        None
+    }
+    /// Alfred works in the user's own browser, so a site the user asks for opens there, in Alfred's tab.
+    fn in_users_browser(&self) -> bool {
+        false
+    }
 }
 
 /// Performs actions. `alfred-mac` provides the real one; [`DryRun`] records instead.
 pub trait Executor: Send + Sync {
     fn execute(&self, action: &Action) -> Result<Outcome, String>;
+    /// What the user is looking at right now (the app they were in, their tab's site) and what Alfred's own
+    /// browser tab shows. Asked only when the model is about to decide.
+    fn context(&self) -> crate::context::Context {
+        crate::context::Context::default()
+    }
 }
 
 /// Records every action and pretends it worked. Used by tests, `alfred eval` and `--dry-run`.
 #[derive(Default)]
 pub struct DryRun {
     log: Mutex<Vec<Action>>,
+    context: crate::context::Context,
+    context_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl DryRun {
@@ -271,6 +302,17 @@ impl DryRun {
     /// Every action executed so far, in order.
     pub fn actions(&self) -> Vec<Action> {
         self.log.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    /// Pretend the user is looking at this.
+    pub fn with_context(mut self, context: crate::context::Context) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// How many times the context was asked for.
+    pub fn context_reads(&self) -> usize {
+        self.context_reads.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn clear(&self) {
@@ -289,6 +331,11 @@ impl Executor for DryRun {
             Action::GetTime => "It's 09:41 on Tuesday 24 November.".to_string(),
             other => other.done_phrase(),
         }))
+    }
+
+    fn context(&self) -> crate::context::Context {
+        self.context_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.context.clone()
     }
 }
 

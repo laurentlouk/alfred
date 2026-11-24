@@ -4,6 +4,7 @@
 //! `on run argv`, and the inputs travel as separate process arguments, so a note body such as
 //! `" & do shell script "…` is just text.
 
+pub mod focus;
 pub mod mail;
 pub mod shortcuts;
 
@@ -166,6 +167,15 @@ impl Executor for MacExecutor {
                 if alfred_core::normalize::url(url).as_deref() != Some(url.as_str()) {
                     return Err(format!("{url} is not a web address I can open."));
                 }
+                // Working in the user's Chrome, the site opens in Alfred's tab there, so follow-ups ("what do
+                // you see?") can look at it.
+                if browser.is_none()
+                    && let Some(web) = &self.web
+                    && web.in_users_browser()
+                    && let Ok(shown) = web.show(url)
+                {
+                    return Ok(shown);
+                }
                 self.open_in_browser(url, browser.as_deref())?;
                 Ok(Outcome::new(action.done_phrase()))
             }
@@ -178,6 +188,16 @@ impl Executor for MacExecutor {
             Action::PressButton { app, role, name } if app == BROWSER_APP => self.web()?.press(role, name),
             Action::PressButton { app, role, name } => self.hands()?.press(app, role, name),
             Action::UseBrowser { task, url } => self.web()?.browse(task, url.as_deref()),
+            Action::UseTheirTab { task } => {
+                let web = self.web()?;
+                let app = focus::front_app(focus::TIMEOUT).ok_or("I can't tell which app you're in.")?;
+                if !focus::is_browser(&app) {
+                    return Err(format!("You're in {app}, not a browser I can read; open the page and ask me again."));
+                }
+                let url = focus::tab_url(&app, focus::TIMEOUT)
+                    .ok_or_else(|| format!("I can't see a web page in {app}; Alfred may need permission to read it (System Settings → Privacy & Security → Automation)."))?;
+                web.browse_theirs(task, &url)
+            }
             Action::ReadMail { from } => mail::read(from.as_deref(), self.timeout),
             Action::DraftReply { from, text } => mail::reply(from.as_deref(), text, self.timeout),
             Action::GetTime => {
@@ -186,6 +206,13 @@ impl Executor for MacExecutor {
                 Ok(Outcome::new(format!("It's {}.", run(cmd, self.timeout)?.trim())))
             }
         }
+    }
+
+    fn context(&self) -> alfred_core::context::Context {
+        let app = focus::front_app(focus::TIMEOUT);
+        let site = app.as_deref().filter(|a| focus::is_browser(a)).and_then(|a| focus::tab_url(a, focus::TIMEOUT));
+        let alfred_site = self.web.as_ref().and_then(|w| w.page());
+        alfred_core::context::Context::new(app.as_deref(), site.as_deref(), alfred_site.as_deref())
     }
 }
 

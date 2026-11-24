@@ -477,11 +477,72 @@ pub struct BrowserHands {
     model: Mutex<Box<dyn ChatModel>>,
     max_steps: usize,
     search_engine: String,
+    /// The address Alfred last saw in its own tab (never the user's).
+    last_url: Mutex<String>,
+    /// The tab Alfred is working in: its own ([`ALFRED_TAB`]), or the user's, by its target id. A confirmed
+    /// click happens there.
+    working_tab: Mutex<String>,
+    /// Alfred's tab was looked for once, for an Alfred started after it was opened.
+    looked_for_tab: std::sync::atomic::AtomicBool,
 }
 
 impl BrowserHands {
     pub fn new(browser: Box<dyn Browser>, model: Box<dyn ChatModel>, max_steps: usize) -> Self {
-        Self { browser, model: Mutex::new(model), max_steps: max_steps.clamp(1, 25), search_engine: "google".into() }
+        Self {
+            browser,
+            model: Mutex::new(model),
+            max_steps: max_steps.clamp(1, 25),
+            search_engine: "google".into(),
+            last_url: Mutex::new(String::new()),
+            working_tab: Mutex::new(ALFRED_TAB.into()),
+            looked_for_tab: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The address the tab shows now, remembered when the tab is Alfred's own.
+    fn url_now(&self) -> Result<String, BrowserError> {
+        let url = self.call(args(["get", "url"]))?["url"].as_str().unwrap_or("").to_string();
+        let in_own_tab = self.working_tab.lock().map(|t| *t == ALFRED_TAB).unwrap_or(false);
+        if in_own_tab
+            && !is_blank(&url)
+            && let Ok(mut last) = self.last_url.lock()
+        {
+            *last = url.clone();
+        }
+        Ok(url)
+    }
+
+    fn set_working_tab(&self, tab: &str) {
+        if let Ok(mut t) = self.working_tab.lock() {
+            *t = tab.to_string();
+        }
+    }
+
+    /// The tab the user is looking at, which shows `url`: Alfred's own ([`ALFRED_TAB`]) when it shows that
+    /// page (the user is looking at what Alfred opened), else theirs by its target id. The exact address
+    /// first, then the same address without a trailing slash.
+    fn their_tab(&self, url: &str) -> Option<String> {
+        let list = self.call(args(["tab", "list"])).ok()?;
+        let tabs = list["tabs"].as_array()?;
+        let find = |same: &dyn Fn(&str) -> bool| {
+            let shows = |t: &&Value| t["url"].as_str().is_some_and(same);
+            if tabs.iter().filter(|t| t["label"].as_str() == Some(ALFRED_TAB)).any(|t| shows(&t)) {
+                return Some(ALFRED_TAB.to_string());
+            }
+            tabs.iter().find(shows).and_then(|t| t["targetId"].as_str().map(str::to_string))
+        };
+        find(&|u| u == url).or_else(|| find(&|u| u.trim_end_matches('/') == url.trim_end_matches('/')))
+    }
+
+    /// The results and their top pages don't say: look further as a person would (open other results,
+    /// search the site, scroll) until the answer is found or the steps run out.
+    fn look_further(&self, query: &str) -> Option<String> {
+        let task = format!(
+            "Find the answer to this question: {query}. When you have it, finish with done and put the answer, saying which site it comes from, in note."
+        );
+        let mut answer = None;
+        self.work(&task, vec![format!("read the search results and the top pages for \"{}\"", clip(query, 60))], &mut answer).ok()?;
+        answer.filter(|a: &String| !a.trim().is_empty())
     }
 
     /// The engine the `search` step uses: `google`, `duckduckgo` or `bing`.
@@ -526,10 +587,7 @@ impl BrowserHands {
     }
 
     fn observe(&self) -> Result<Page, String> {
-        let url = self.call(args(["get", "url"])).map_err(|e| format!("The browser isn't working: {e}"))?["url"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let url = self.url_now().map_err(|e| format!("The browser isn't working: {e}"))?;
         if is_blank(&url) {
             return Ok(Page {
                 url,
@@ -599,7 +657,7 @@ impl BrowserHands {
     fn read_for_answer(&self, links: bool) -> Result<(Value, String, String), String> {
         self.call(args(["wait", "--load", "load", "--timeout", "10000"])).ok();
         let (snap, _) = self.snapshot_past_consent(links)?;
-        let url = self.call(args(["get", "url"])).ok().and_then(|d| d["url"].as_str().map(str::to_string)).unwrap_or_default();
+        let url = self.url_now().unwrap_or_default();
         let content = self.call(args(["read"])).ok().and_then(|d| d["content"].as_str().map(str::to_string)).unwrap_or_default();
         Ok((snap, url, content))
     }
@@ -630,12 +688,12 @@ impl BrowserHands {
 
     /// Answer from one engine's results page, then from its top organic results. The window ends on the
     /// page the answer came from, or back on the results when none had it.
-    fn answer_from(&self, query: &str, engine: &str, results: (Value, String, String)) -> Result<String, String> {
+    fn answer_from(&self, query: &str, engine: &str, results: (Value, String, String)) -> Result<Option<String>, String> {
         let (snap, url, content) = results;
         let name = engine_name(engine);
         match self.judge(query, &format!("{name}'s results"), &url, &snap, &content, Reading::Results) {
-            Judged::Found(a) => return Ok(a),
-            Judged::NoModel => return Ok(format!("Here are the results for “{query}”.")),
+            Judged::Found(a) => return Ok(Some(a)),
+            Judged::NoModel => return Ok(Some(format!("Here are the results for “{query}”."))),
             Judged::NotFound => {}
         }
         // The results don't say: open the top organic results and read them, as a person would. A click on
@@ -666,8 +724,8 @@ impl BrowserHands {
             }
             let site = host_of(&page_url);
             match self.judge(query, &site, &page_url, &page, &text, Reading::Article) {
-                Judged::Found(a) => return Ok(cited(&a, &site)),
-                Judged::NoModel => return Ok(format!("I couldn't read it for you; {site} is open in the browser.")),
+                Judged::Found(a) => return Ok(Some(cited(&a, &site))),
+                Judged::NoModel => return Ok(Some(format!("I couldn't read it for you; {site} is open in the browser."))),
                 Judged::NotFound => {}
             }
         }
@@ -675,55 +733,12 @@ impl BrowserHands {
             self.call(args(["back"])).ok();
             self.settle();
         }
-        Ok(format!("I couldn't find the answer in {name}'s results or the top pages; the results are open in the browser."))
+        Ok(None)
     }
 
-    /// Open an address: one the user gave, or the search engine's results for a query.
-    fn open(&self, url: &str) -> Result<(), BrowserError> {
-        self.call(args(["open", url]))?;
-        self.settle();
-        Ok(())
-    }
-
-    /// Where a request starts: at `url` when there is one. In the user's own Chrome that is Alfred's own
-    /// tab, opened the first time and reused after, so the user's tabs are never read, navigated or
-    /// clicked; without an address a new tab starts blank.
-    fn start(&self, url: Option<&str>) -> Result<(), BrowserError> {
-        if !self.browser.shared() || self.call(args(["tab", ALFRED_TAB])).is_ok() {
-            return url.map_or(Ok(()), |u| self.open(u));
-        }
-        let mut new_tab = args(["tab", "new", "--label", ALFRED_TAB]);
-        new_tab.extend(url.map(str::to_string));
-        self.call(new_tab)?;
-        self.settle();
-        Ok(())
-    }
-}
-
-/// The label of Alfred's tab in the user's own Chrome.
-const ALFRED_TAB: &str = "alfred";
-
-/// Roles whose unnamed elements are never clicked: they act, and without a name the guard can't tell how.
-const UNNAMED_REFUSED: &[&str] = &["button", "link", "menuitem", "image", "img", "tab", "generic"];
-
-/// Fields after which Enter may be pressed: it runs a search, not a form.
-const SEARCH_FIELDS: &[&str] = &["searchbox", "combobox"];
-
-const NO_SECRETS: &str = "I don't type passwords or card details; please do that in the browser window.";
-
-impl WebHands for BrowserHands {
-    fn browse(&self, task: &str, url: Option<&str>) -> Result<Outcome, String> {
-        let mut history: Vec<String> = Vec::new();
-        if let Some(u) = url {
-            // Refuse anything that isn't http(s) even if a caller built the action by hand.
-            if web_url(u).as_deref() != Some(u) {
-                return Err(format!("{u} is not a web address I can open."));
-            }
-            self.start(Some(u)).map_err(|e| format!("I couldn't open {}: {e}", host_of(u)))?;
-            history.push(format!("opened {}", host_of(u)));
-        } else {
-            self.start(None).map_err(|e| e.to_string())?;
-        }
+    /// Work towards `task` on the page now open, one observed step at a time. `history` says what was done
+    /// so far; `answer` gets the run's closing note when it ends with `done`.
+    fn work(&self, task: &str, mut history: Vec<String>, answer: &mut Option<String>) -> Result<Outcome, String> {
         let mut circling = Circling::default();
         let mut plan: Option<Vec<String>> = None;
         // The role of the field the previous action filled: Enter is pressed only right after a search box.
@@ -750,7 +765,10 @@ impl WebHands for BrowserHands {
                     circling.ban_ref(&step, &mut history)
                 };
                 if !taken {
-                    return Err(crate::stuck(PLACE, &history));
+                    return match self.read_what_is_there(task, &history, answer) {
+                        Some(found) => Ok(found),
+                        None => Err(crate::stuck(PLACE, &history)),
+                    };
                 }
                 step = self.decide(task, plan, &history, &page, &circling)?;
                 trace(&page.text, &step);
@@ -760,6 +778,7 @@ impl WebHands for BrowserHands {
             match step.action.as_str() {
                 "done" => {
                     let note = clip(&step.note, 300);
+                    *answer = Some(note.clone());
                     let did = summary(PLACE, &history, "");
                     let said = [note.as_str(), did.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" ");
                     return Ok(Outcome::new(if said.is_empty() { "Done in the browser.".to_string() } else { said }));
@@ -868,13 +887,87 @@ impl WebHands for BrowserHands {
             }
         }
         // The browser stays open on the last page, for the user to see.
+        if let Some(found) = self.read_what_is_there(task, &history, answer) {
+            return Ok(found);
+        }
         Ok(Outcome::new(summary(PLACE, &history, &format!("I stopped after {} steps; it may not be finished.", self.max_steps))))
     }
 
+    /// A run that stopped short (going in circles, or out of steps) often stands on what the user asked for:
+    /// read the page it reached, and answer from it when it does.
+    fn read_what_is_there(&self, task: &str, history: &[String], answer: &mut Option<String>) -> Option<Outcome> {
+        let (snap, url, content) = self.read_for_answer(false).ok()?;
+        if is_blank(&url) || is_robot_check(&snap, &url, &content) {
+            return None;
+        }
+        let site = host_of(&url);
+        let Judged::Found(found) = self.judge(task, &site, &url, &snap, &content, Reading::Article) else { return None };
+        let found = cited(&found, &site);
+        *answer = Some(found.clone());
+        let did = summary(PLACE, history, "");
+        Some(Outcome::new([found.as_str(), did.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" ")))
+    }
+
+    /// Open an address: one the user gave, or the search engine's results for a query.
+    fn open(&self, url: &str) -> Result<(), BrowserError> {
+        self.call(args(["open", url]))?;
+        self.settle();
+        Ok(())
+    }
+
+    /// Where a request starts: at `url` when there is one. In the user's own Chrome that is Alfred's own
+    /// tab, opened the first time and reused after, so the user's tabs are never read, navigated or
+    /// clicked; without an address a new tab starts blank.
+    fn start(&self, url: Option<&str>) -> Result<(), BrowserError> {
+        self.set_working_tab(ALFRED_TAB);
+        if !self.browser.shared() || self.call(args(["tab", ALFRED_TAB])).is_ok() {
+            return url.map_or(Ok(()), |u| self.open(u));
+        }
+        let mut new_tab = args(["tab", "new", "--label", ALFRED_TAB]);
+        new_tab.extend(url.map(str::to_string));
+        self.call(new_tab)?;
+        self.settle();
+        Ok(())
+    }
+}
+
+/// The label of Alfred's tab in the user's own Chrome.
+const ALFRED_TAB: &str = "alfred";
+
+/// Roles whose unnamed elements are never clicked: they act, and without a name the guard can't tell how.
+const UNNAMED_REFUSED: &[&str] = &["button", "link", "menuitem", "image", "img", "tab", "generic"];
+
+/// Fields after which Enter may be pressed: it runs a search, not a form.
+const SEARCH_FIELDS: &[&str] = &["searchbox", "combobox"];
+
+const NO_SECRETS: &str = "I don't type passwords or card details; please do that in the browser window.";
+
+impl WebHands for BrowserHands {
+    fn browse(&self, task: &str, url: Option<&str>) -> Result<Outcome, String> {
+        let mut history: Vec<String> = Vec::new();
+        if let Some(u) = url {
+            // Refuse anything that isn't http(s) even if a caller built the action by hand.
+            if web_url(u).as_deref() != Some(u) {
+                return Err(format!("{u} is not a web address I can open."));
+            }
+            self.start(Some(u)).map_err(|e| format!("I couldn't open {}: {e}", host_of(u)))?;
+            history.push(format!("opened {}", host_of(u)));
+        } else {
+            self.start(None).map_err(|e| e.to_string())?;
+        }
+        let mut answer = None;
+        self.work(task, history, &mut answer)
+    }
+
     fn press(&self, role: &str, name: &str) -> Result<Outcome, String> {
-        // In the user's Chrome the click happens in Alfred's tab or not at all.
-        if self.browser.shared() && self.call(args(["tab", ALFRED_TAB])).is_err() {
-            return Err(format!("Alfred's tab in Chrome is closed, so I didn't click “{name}”."));
+        // In the user's Chrome the click happens in the tab the run stopped in, or not at all.
+        let tab = self.working_tab.lock().map(|t| t.clone()).unwrap_or_else(|_| ALFRED_TAB.into());
+        if self.browser.shared() && self.call(args(["tab", &tab])).is_err() {
+            return Err(if tab == ALFRED_TAB {
+                format!("Alfred's tab in Chrome is closed, so I didn't click “{name}”.")
+            } else {
+                format!("Your tab was closed, so I didn't click “{name}”.")
+            });
         }
         for attempt in 0..2 {
             let snap = self.snapshot(false)?;
@@ -931,13 +1024,64 @@ impl WebHands for BrowserHands {
                     Err(both)
                 };
             }
-            let said = self.answer_from(query, engine, results)?;
+            let said = match self.answer_from(query, engine, results)? {
+                Some(found) => found,
+                None => self.look_further(query).unwrap_or_else(|| {
+                    format!(
+                        "I couldn't find the answer in {}'s results or the pages I looked at; the results are open in the browser.",
+                        engine_name(engine)
+                    )
+                }),
+            };
             let lead = blocked
                 .map(|b| format!("{} asked me to prove I'm not a robot, so I asked {}. ", engine_name(b), engine_name(engine)))
                 .unwrap_or_default();
             return Ok(Outcome::new(format!("{lead}{said}")));
         }
         Err("no search engine could be read".into())
+    }
+
+    fn show(&self, url: &str) -> Result<Outcome, String> {
+        if web_url(url).as_deref() != Some(url) {
+            return Err(format!("{url} is not a web address I can open."));
+        }
+        self.start(Some(url)).map_err(|e| format!("I couldn't open {}: {e}", host_of(url)))?;
+        self.url_now().ok();
+        Ok(Outcome::new(format!("I've opened {}.", host_of(url))))
+    }
+
+    fn browse_theirs(&self, task: &str, url: &str) -> Result<Outcome, String> {
+        if web_url(url).as_deref() != Some(url) {
+            return Err(format!("{url} is not a web page I can work on."));
+        }
+        let mut history = Vec::new();
+        if self.browser.shared() {
+            let tab = self.their_tab(url).ok_or("I couldn't find your tab in Chrome.")?;
+            self.call(args(["tab", &tab])).map_err(|e| format!("I couldn't switch to your tab: {e}"))?;
+            self.set_working_tab(&tab);
+        } else {
+            // Alfred can't reach the user's own browser: the same page, in Alfred's window. The address is the
+            // one the user chose to look at, never one read from a page.
+            self.start(Some(url)).map_err(|e| format!("I couldn't open {}: {e}", host_of(url)))?;
+            history.push(format!("opened {}, the page you're on", host_of(url)));
+        }
+        let mut answer = None;
+        self.work(task, history, &mut answer)
+    }
+
+    fn page(&self) -> Option<String> {
+        let known = self.last_url.lock().ok().map(|u| u.clone()).filter(|u| !is_blank(u));
+        if known.is_some() || !self.browser.shared() || self.looked_for_tab.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return known;
+        }
+        // Alfred's tab outlives Alfred: after a restart, find it once and read where it is.
+        self.call(args(["tab", ALFRED_TAB])).ok()?;
+        self.set_working_tab(ALFRED_TAB);
+        self.url_now().ok().filter(|u| !is_blank(u))
+    }
+
+    fn in_users_browser(&self) -> bool {
+        self.browser.shared()
     }
 }
 
