@@ -8,13 +8,13 @@
 Summon it, say or type what you need, and it opens your apps, saves notes, adds reminders and searches the web: on your Mac, with a local model, in a calm British voice.</p>
 
 <p align="center">
-  <img src="docs/images/conversation.png" width="300" alt="Alfred floating over the desktop: the orb, the request field, a request, its answer, and the action as a chip">
+  <img src="docs/images/listening.png" width="300" alt="Alfred floating over the desktop: the orb listening, rings rippling out, and the words appearing in the field as they are said">
 </p>
 
 ## What it does
 
-- **Always at hand.** Alfred is an orb that floats over your windows, on your main display and on every desktop, with no window around it. <kbd>⌃⇧Space</kbd> brings it forward, it's in the Dock and <kbd>⌘Tab</kbd> like any app, and <kbd>esc</kbd> puts it away.
-- **Just say "Alfred".** "Alfred, what time is it?" works from across the room, like "Hey Siri" (turn on `wake_word`). Or click the orb (<kbd>⌘L</kbd>) and speak. Your words appear as you say them, background noise is cleaned out, and Alfred answers about half a second after you stop. Say "Alfred" while it talks to cut it short.
+- **Always at hand.** Alfred is an orb that floats over your windows, on your main display and on every desktop, with no window or background around it; drag the orb to put it anywhere. <kbd>⌃⇧Space</kbd> brings it forward, it's in the Dock and <kbd>⌘Tab</kbd> like any app, and <kbd>esc</kbd> puts it away. Answers are spoken rather than written, and the field grows as you type, like a chat's (<kbd>Return</kbd> sends, <kbd>⇧Return</kbd> adds a line).
+- **Just say "Alfred".** "Alfred, what time is it?" works from across the room, like "Hey Siri" (turn on `wake_word`); the mic button turns that listening off, and the microphone with it, and back on. Or press <kbd>⌘L</kbd> and speak. Your words appear as you say them, background noise is cleaned out, and Alfred answers about half a second after you stop. Say "Alfred" while it talks to cut it short.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches the web, opens links, tells the time.
 - **It answers from the web.** "What's the weather in Paris?" opens the results in Alfred's own browser tab, reads them, and tells you; when they don't say, it keeps looking, as you would.
 - **It knows where you are.** Alfred sees which app you're in and, in a browser, which site, so "this page", "here" and follow-ups just work: "go to the Pokémon website", then "what Pokémon do you see?", then "open the Pokédex and tell me the first one". "Prompt Claude for me: …" writes it in Claude.

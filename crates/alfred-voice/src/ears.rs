@@ -104,6 +104,7 @@ enum Control {
     Finish,
     Cancel,
     Speaking(bool),
+    Muted(bool),
     Stop,
 }
 
@@ -181,6 +182,12 @@ impl Ears {
     /// the click, which is its own voice.
     pub fn set_speaking(&self, on: bool) {
         self.control.send(Control::Speaking(on)).ok();
+    }
+
+    /// Mute: the microphone closes (macOS's indicator goes out), the command being heard is dropped, and
+    /// neither "Alfred" nor click-to-talk captures anything until unmuted.
+    pub fn set_muted(&self, muted: bool) {
+        self.control.send(Control::Muted(muted)).ok();
     }
 }
 
@@ -278,6 +285,13 @@ fn run<S: Source>(mut core: Core, mut source: S, commands: Receiver<Control>, on
                 Control::Finish => core.finish(&on),
                 Control::Cancel => core.cancel(),
                 Control::Speaking(speaking) => core.speaking = speaking,
+                Control::Muted(muted) => {
+                    if muted {
+                        core.cancel();
+                    }
+                    core.muted = muted;
+                    retry_at = None;
+                }
             }
             continue;
         }
@@ -349,6 +363,8 @@ struct Core {
     listener: Listener,
     /// Alfred is talking.
     speaking: bool,
+    /// The user turned listening off: no microphone at all.
+    muted: bool,
     /// The last seconds of audio while waiting for the wake word.
     recent: VecDeque<f32>,
     command: Option<Command>,
@@ -380,17 +396,18 @@ impl Core {
             wake,
             listener: Listener::load(models)?,
             speaking: false,
+            muted: false,
             recent: VecDeque::with_capacity(samples(RECENT_SECS)),
             command: None,
         })
     }
 
     fn wants_mic(&self) -> bool {
-        self.wake.is_some() || self.command.is_some()
+        !self.muted && (self.wake.is_some() || self.command.is_some())
     }
 
     fn listen_now(&mut self, emit: &dyn Fn(Heard)) {
-        if self.command.is_some() {
+        if self.command.is_some() || self.muted {
             return;
         }
         // While Alfred talks, the audio before the click is its own voice.
@@ -839,6 +856,33 @@ mod listening {
         let Heard::Final(text) = last_text(&events).1 else { panic!("{events:?}") };
         let text = text.to_lowercase();
         assert!(text.starts_with("open notes") && text.contains("milk"), "{text:?}");
+    }
+
+    /// Waits until `done` holds, at most 10 s.
+    fn wait_for(done: impl Fn() -> bool) {
+        let t = Instant::now();
+        while !done() {
+            assert!(t.elapsed() < Duration::from_secs(10), "it never happened");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn muting_closes_the_microphone_and_ignores_everything_until_unmuted() {
+        let Some(m) = models_ready() else { return };
+        let mut audio = say("Alfred, open Notes.");
+        audio.extend(silence(1.0));
+        let run = start(&m, wake_on(), audio);
+        wait_for(|| run.open.load(Ordering::SeqCst));
+        run.ears.set_muted(true);
+        wait_for(|| !run.open.load(Ordering::SeqCst));
+        run.ears.listen_now();
+        run.play();
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!run.open.load(Ordering::SeqCst), "click-to-talk is off while muted");
+        assert!(run.events.try_iter().all(|(_, h)| matches!(h, Heard::Level(_))), "nothing is heard while muted");
+        run.ears.set_muted(false);
+        wait_for(|| run.open.load(Ordering::SeqCst));
     }
 
     #[test]

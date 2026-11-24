@@ -55,7 +55,7 @@ pub fn layer(kind: u32, d: [f32; 4], rect: [f32; 4], t: f32) -> Option<(FxLayer,
             style: GlowStyle::Soft,
             color: rgb(0x10b981),
             core: rgb(0xa7f3d0),
-            radius: 14.0 + 10.0 * e + 8.0 * level,
+            radius: glow_radius(e, level),
             intensity: 0.5 + 0.8 * e + if speaking { 0.6 * level } else { 0.0 },
             breathe: if thinking { 0.6 } else { 0.3 },
             breathe_period: if thinking { 1.2 } else { 3.6 },
@@ -107,7 +107,7 @@ pub fn layer(kind: u32, d: [f32; 4], rect: [f32; 4], t: f32) -> Option<(FxLayer,
             core: rgb(0xf0fdfa),
             count: 3,
             period: 1.6 - 0.6 * level,
-            reach: 30.0 + 46.0 * level,
+            reach: ring_reach(level),
             width: 3.0,
             intensity: 1.0 + 0.6 * level,
             ..Default::default()
@@ -115,6 +115,17 @@ pub fn layer(kind: u32, d: [f32; 4], rect: [f32; 4], t: f32) -> Option<(FxLayer,
         _ => return None,
     };
     Some((fx.on(circle).at(t), blend))
+}
+
+/// How far the glow reaches past the orb's edge, in points: at most 32.
+pub fn glow_radius(energy: f32, level: f32) -> f32 {
+    14.0 + 10.0 * energy.clamp(0.0, 1.0) + 8.0 * level.clamp(0.0, 1.0)
+}
+
+/// How far the listening rings travel past the orb's edge, in points: at most 32, so with the orb at its
+/// largest they still end inside the orb's space instead of being cut by the window.
+pub fn ring_reach(level: f32) -> f32 {
+    14.0 + 18.0 * level.clamp(0.0, 1.0)
 }
 
 struct FxCache {

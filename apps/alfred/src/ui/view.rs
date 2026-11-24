@@ -1,10 +1,12 @@
 //! What Alfred shows: a compact column with no background at all, floating above other windows like a
-//! widget. The green fluid orb on top (drawn on the GPU by `gfx`), then what Alfred is doing (drag it to
-//! move Alfred), a field to type or talk, and the latest exchange as bare text. Plain functions of the
-//! state; handlers only mutate `Ui`.
+//! widget. Nothing is painted behind the text, not even a shadow (Rune draws a shadow as a box). The green
+//! fluid orb on top (drawn on the GPU by `gfx`; drag it to move Alfred), what Alfred is doing, and a field
+//! to type in that grows like a chat's. Answers are spoken, not written, unless Alfred
+//! has no voice; a question waiting for a yes shows with its Yes and No. Plain functions of the state;
+//! handlers only mutate `Ui`.
 
 use rune::tok::type_;
-use rune::{Color, Cx, El, KeyEvent, TextStyle, Tx, canvas, col, el, row, text, text_input};
+use rune::{Color, Cx, El, KeyEvent, ScrollSpec, TextStyle, Tx, canvas, col, el, row, text, text_input};
 
 use super::gfx;
 use super::orb;
@@ -34,18 +36,16 @@ fn bad() -> Color {
     rune::oklch(0.74, 0.17, 25.0)
 }
 
-/// A soft, wide, dark shadow behind light text: invisible on a dark desktop, enough on a white window for
-/// the words to stay readable, as macOS does for desktop icon labels. Not a background: nothing is filled.
-fn legible(e: El) -> El {
-    e.shadow(0.0, 18.0, rune::oklch(0.12, 0.02, 165.0).alpha(0.55))
-}
-
 /// Text sits on whatever is behind the window, so it is a little heavier than usual.
 const REPLY: TextStyle = TextStyle::new(14.0, 560.0);
 const SMALL: TextStyle = TextStyle::new(12.0, 600.0);
-/// The orb's diameter and the room around it for the glow.
-const ORB: f32 = 148.0;
-const HALO: f32 = 34.0;
+/// The orb's diameter and the room around it for the glow and the listening rings. Everything the orb
+/// draws, at its largest, stays inside this square (see the tests).
+pub const ORB: f32 = 148.0;
+pub const HALO: f32 = 46.0;
+/// The longest the field grows, in lines, before it scrolls; and its line height.
+const FIELD_LINES: usize = 4;
+const FIELD_LINE: f32 = 20.0;
 
 pub fn view(s: &Ui, _cx: &mut Cx<Ui>) -> El {
     col()
@@ -62,9 +62,10 @@ pub fn view(s: &Ui, _cx: &mut Cx<Ui>) -> El {
         .child(footer(s))
 }
 
-/// The orb: water in a glass bubble, as GPU layers in one spot, and a round button over them to talk.
-/// Listening adds rings rippling out; thinking whirls the water and breathes; replying swells its waves
-/// and pulses with Alfred's voice.
+/// The orb: water in a glass bubble, as GPU layers in one spot. Listening adds rings rippling out;
+/// thinking whirls the water and breathes; replying swells its waves and pulses with Alfred's voice. Its
+/// square never changes size: only what is inside it swells, and the glow and rings are bounded so they
+/// stay inside it, so nothing is cut at the window's edge. Dragging the orb moves Alfred.
 fn orb_block(s: &Ui) -> El {
     let t = s.clock as f32;
     let e = orb::energy(s.mode, s.level);
@@ -73,25 +74,20 @@ fn orb_block(s: &Ui) -> El {
     let liquid = ORB * 0.97;
     let inset = HALO + (ORB - liquid) / 2.0;
     let slot = |kind: u32| rune::effect(kind).effect_data(data);
-    let mut block = el().key("orb-block").size(side, side).scale(orb::swell(s.mode, s.level, t));
+    let mut orb = el().key("orb-swell").absolute(0.0, 0.0).size(side, side).scale(orb::swell(s.mode, s.level, t));
     if s.mode == Mode::Listening {
-        block = block.child(slot(gfx::RINGS).effect_bleed(90.0).absolute(HALO, HALO).size(ORB, ORB).radius(ORB / 2.0));
+        orb = orb.child(slot(gfx::RINGS).effect_bleed(HALO).absolute(HALO, HALO).size(ORB, ORB).radius(ORB / 2.0));
     }
-    block
+    let orb = orb
         .child(slot(gfx::GLOW).effect_bleed(HALO).absolute(HALO, HALO).size(ORB, ORB).radius(ORB / 2.0))
         .child(slot(gfx::BODY).absolute(inset, inset).size(liquid, liquid).radius(liquid / 2.0))
         .child(slot(gfx::VEINS).rotate(orb::swirl(s.mode, t)).absolute(inset, inset).size(liquid, liquid).radius(liquid / 2.0))
         .child(slot(gfx::RIPPLE).effect_backdrop(true).absolute(inset, inset).size(liquid, liquid).radius(liquid / 2.0))
-        .child(slot(gfx::LENS).effect_backdrop(true).effect_bleed(16.0).absolute(HALO, HALO).size(ORB, ORB).radius(ORB / 2.0))
-        .child(
-            el().key("orb")
-                .role("button")
-                .label(if s.mode == Mode::Listening { "Stop listening" } else { "Talk to Alfred" })
-                .absolute(HALO, HALO)
-                .size(ORB, ORB)
-                .radius(ORB / 2.0)
-                .on_press_tx(|s: &mut Ui, tx: &mut Tx| s.toggle_listening(tx)),
-        )
+        .child(slot(gfx::LENS).effect_backdrop(true).effect_bleed(16.0).absolute(HALO, HALO).size(ORB, ORB).radius(ORB / 2.0));
+    el().key("orb-block")
+        .size(side, side)
+        .child(orb)
+        .child(el().key("orb").label("Alfred: drag to move").window_drag().absolute(HALO, HALO).size(ORB, ORB).radius(ORB / 2.0))
 }
 
 /// What Alfred is doing, or what it heard so far. Dragging it moves Alfred around the screen.
@@ -109,68 +105,96 @@ fn caption(s: &Ui) -> El {
         .h(22.0)
         .px(8.0)
         .center()
-        .child(legible(text(s.caption()).key("caption").font(SMALL).color(color).truncate()))
+        .child(text(s.caption()).key("caption").font(SMALL).color(color).truncate())
 }
 
+/// The field grows with what is typed, like a chat's, up to a few lines, then scrolls with the cursor in
+/// view. Return sends; Shift+Return starts a new line.
 fn ask_field(s: &Ui) -> El {
     let listening = s.mode == Mode::Listening;
-    let field = text_input(&s.input, type_::BODY.lh(20.0))
+    let field = text_input(&s.input, type_::BODY.lh(FIELD_LINE))
         .key("ask")
         .label("Ask Alfred")
-        .single_line()
-        .grow(1.0)
+        .w_full()
         .color(ink())
         .placeholder("Ask Alfred…", muted())
         .on_edit(|s: &mut Ui| &mut s.input)
         .on_submit(|s: &mut Ui, _: &mut Tx| s.submit())
         .on_input_key(|s: &mut Ui, ev: &KeyEvent, tx: &mut Tx| super::on_key(s, ev, tx));
+    // With "Alfred" listened for all the time, the button turns that off and on; otherwise it dictates.
+    let (label, glyph, lit) = match (s.wake_word, s.muted) {
+        (true, true) => ("Listen for “Alfred”", orb::mic_off(muted()), false),
+        (true, false) => ("Stop listening", orb::mic(ink()), listening),
+        (false, _) if listening => ("Stop listening", orb::mic(deep()), true),
+        (false, _) => ("Talk", orb::mic(ink()), false),
+    };
+    let glyph = if lit { orb::mic(deep()) } else { glyph };
+    let ring = if lit || (s.wake_word && !s.muted) { mint() } else { rim() };
     let mic = row()
         .key("mic")
         .role("button")
-        .label(if listening { "Stop listening" } else { "Talk" })
+        .label(label)
         .size(28.0, 28.0)
         .radius(14.0)
         .center()
-        .border(1.0, if listening { mint() } else { rim() })
-        .fill(if listening { mint() } else { Color::TRANSPARENT })
+        .border(1.0, ring)
+        .fill(if lit { mint() } else { Color::TRANSPARENT })
         .hover(mint().alpha(0.4))
-        .on_press_tx(|s: &mut Ui, tx: &mut Tx| s.toggle_listening(tx))
-        .child(canvas(orb::mic(if listening { deep() } else { ink() })).size(14.0, 14.0));
-    legible(row())
+        .on_press(|s: &mut Ui| s.press_mic())
+        .child(canvas(glyph).size(14.0, 14.0));
+    row()
         .key("ask-row")
         .w_full()
-        .h(40.0)
+        .min_h(40.0)
+        .py(6.0)
         .pl(14.0)
         .pr(6.0)
         .gap(8.0)
-        .center_y()
+        .items_end()
         .radius(20.0)
         .border(1.0, if listening { mint().alpha(0.85) } else { rim() })
-        .child(field)
+        .child(growing(field).grow(1.0).mb(4.0))
         .child(mic)
 }
 
-/// The latest exchange only: what you asked, Alfred's answer, what it did, and a Yes/No when it waits for
-/// one. Before any, one example of what to say.
+/// The field inside a viewport that grows a line at a time up to [`FIELD_LINES`], then scrolls, always
+/// following the end: the latest words stay in view as they arrive, typed or dictated, like a chat's
+/// composer.
+fn growing(field: El) -> El {
+    col()
+        .key("scroll")
+        .w_full()
+        .shrink()
+        .min_h(FIELD_LINE)
+        .max_h(FIELD_LINES as f32 * FIELD_LINE)
+        .scroll(ScrollSpec { stick_bottom: true })
+        .child(field.animate_edit_layout())
+}
+
+/// Answers are spoken, so nothing is written, except a question waiting for a yes (with its Yes and No)
+/// and, when Alfred has no voice, its latest answer.
 fn exchange(s: &Ui) -> El {
-    let Some((i, t)) = s.turns.iter().enumerate().next_back() else {
-        return block("tips").child(legible(text("Try “open Notes and save buy milk”").key("tip-0").font(SMALL).color(muted()).wrap()));
-    };
+    let last = s.turns.iter().enumerate().next_back();
+    if s.pending.is_some()
+        && let Some((i, t)) = last
+    {
+        return block(&format!("turn-{i}"))
+            .child(text(t.alfred.clone()).key(format!("alfred-{i}")).font(REPLY.lh(19.0)).color(ink()).wrap().max_lines(3))
+            .child(confirm_row());
+    }
+    let Some((i, t)) = last.filter(|_| !s.speaks_aloud()) else { return el().key("exchange") };
     let mut c = block(&format!("turn-{i}"));
     if !t.you.is_empty() {
-        c = c.child(legible(text(format!("“{}”", t.you)).key(format!("you-{i}")).font(SMALL).color(muted()).truncate()));
+        c = c.child(text(format!("“{}”", t.you)).key(format!("you-{i}")).font(SMALL).color(muted()).truncate());
     }
     let reply = if t.alfred.is_empty() { "…".to_string() } else { t.alfred.clone() };
-    c = c.child(legible(text(reply).key(format!("alfred-{i}")).font(REPLY.lh(19.0)).color(ink()).wrap().max_lines(5)));
+    c = c.child(text(reply).key(format!("alfred-{i}")).font(REPLY.lh(19.0)).color(ink()).wrap().max_lines(5));
     if !t.chips.is_empty() {
         let mut chips = row().key(format!("chips-{i}")).gap(5.0);
         for (j, ch) in t.chips.iter().take(2).enumerate() {
             chips = chips.child(chip(&format!("chip-{i}-{j}"), &ch.label, ch.state));
         }
         c = c.child(chips);
-    }
-    if s.pending.is_some() {
-        c = c.child(confirm_row());
     }
     c
 }
@@ -186,7 +210,7 @@ fn chip(key: &str, label: &str, state: ChipState) -> El {
         ChipState::Done => (good(), "✓"),
         ChipState::Failed => (bad(), "!"),
     };
-    legible(row())
+    row()
         .key(key.to_string())
         .h(22.0)
         .px(8.0)
@@ -220,7 +244,7 @@ fn confirm_row() -> El {
 /// The keys to remember, small. Dragging it moves Alfred too.
 fn footer(s: &Ui) -> El {
     let hint = text(format!("{} · ⌘L talk · esc hide", pretty_shortcut(&s.shortcut))).key("status").font(SMALL).color(muted().alpha(0.85));
-    row().key("footer").window_drag().h(18.0).px(8.0).center().child(legible(hint.truncate()))
+    row().key("footer").window_drag().h(18.0).px(8.0).center().child(hint.truncate())
 }
 
 /// "ctrl+alt+space" → "⌃⌥Space".

@@ -71,6 +71,10 @@ pub struct Ui {
     pub model_label: String,
     pub voice_ready: bool,
     pub ears_ready: bool,
+    /// Alfred listens for "Alfred" all the time: the mic button then turns that listening off and on.
+    pub wake_word: bool,
+    /// The user turned listening off: the microphone is closed and nothing is heard.
+    pub muted: bool,
     pub shortcut: String,
     /// The panel has had the keyboard since it was last shown. Only then does losing it hide the panel:
     /// shown while another app is in front (at launch, from Finder), it never gets focus, and hiding on
@@ -105,6 +109,8 @@ impl Ui {
             model_label: "qwen3:0.6b via Ollama".into(),
             voice_ready: true,
             ears_ready: true,
+            wake_word: false,
+            muted: false,
             shortcut: Config::default().ui.shortcut,
             had_focus: false,
             focused: false,
@@ -120,6 +126,7 @@ impl Ui {
     fn live(links: Links) -> Self {
         Self {
             shortcut: links.config.ui.shortcut.clone(),
+            wake_word: links.config.voice.wake_word,
             model_label: String::new(),
             voice_ready: false,
             ears_ready: false,
@@ -133,6 +140,7 @@ impl Ui {
             return n.clone();
         }
         match self.mode {
+            Mode::Idle if self.muted => "Not listening.".into(),
             Mode::Idle => "At your service.".into(),
             Mode::Listening => "Listening…".into(),
             Mode::Transcribing => "One moment…".into(),
@@ -144,6 +152,11 @@ impl Ui {
 
     fn config(&self) -> Option<&Config> {
         self.links.as_ref().map(|l| &l.config)
+    }
+
+    /// Answers are spoken: then they aren't written too, which keeps Alfred small.
+    pub fn speaks_aloud(&self) -> bool {
+        self.voice_ready && self.config().is_none_or(|c| c.voice.speak)
     }
 
     // ---- user actions ---------------------------------------------------------------------------
@@ -186,11 +199,34 @@ impl Ui {
         }
     }
 
-    pub fn toggle_listening(&mut self, tx: &mut Tx) {
-        if self.mode == Mode::Listening { self.stop_listening(tx) } else { self.start_listening(tx) }
+    /// The mic button. With "Alfred" listened for all the time, it turns that listening off and back on;
+    /// otherwise it starts and stops dictation.
+    pub fn press_mic(&mut self) {
+        if self.wake_word { self.set_muted(!self.muted) } else { self.toggle_listening() }
     }
 
-    fn start_listening(&mut self, _tx: &mut Tx) {
+    /// Turn listening off (the microphone closes; nothing is heard, not even "Alfred") or back on.
+    pub fn set_muted(&mut self, muted: bool) {
+        if muted && matches!(self.mode, Mode::Listening | Mode::Transcribing) {
+            self.cancel_listening();
+        }
+        self.muted = muted;
+        self.notice = None;
+        if let Some(e) = self.ears() {
+            e.set_muted(muted);
+        }
+    }
+
+    /// ⌘L, or the mic button without the wake word: start dictating, or finish.
+    pub fn toggle_listening(&mut self) {
+        if self.mode == Mode::Listening { self.stop_listening() } else { self.start_listening() }
+    }
+
+    fn start_listening(&mut self) {
+        if self.muted {
+            self.notice = Some("Listening is off: click the mic to turn it back on.".into());
+            return;
+        }
         if !self.ears_ready {
             self.notice = Some("Dictation isn't ready yet: run `alfred setup` to download it.".into());
             return;
@@ -220,7 +256,7 @@ impl Ui {
     }
 
     /// The user is done (a second click): the ears transcribe what they heard.
-    fn stop_listening(&mut self, _tx: &mut Tx) {
+    fn stop_listening(&mut self) {
         self.mode = Mode::Transcribing;
         if let Some(e) = self.ears() {
             e.finish();
@@ -266,7 +302,14 @@ impl Ui {
             Heard::Nothing if listening => {
                 self.restore_typed();
                 self.mode = Mode::Idle;
-                self.notice = Some("I didn't hear anything. Click the orb and speak.".into());
+                self.notice = Some(
+                    if self.wake_word {
+                        "I didn't hear anything. Say “Alfred” and speak."
+                    } else {
+                        "I didn't hear anything. Click the mic and speak."
+                    }
+                    .into(),
+                );
             }
             Heard::Error(e) => {
                 if listening {
@@ -497,7 +540,7 @@ fn on_key(s: &mut Ui, ev: &KeyEvent, tx: &mut Tx) -> bool {
             true
         }
         Key::Command('l') => {
-            s.toggle_listening(tx);
+            s.toggle_listening();
             true
         }
         Key::Command('k') => {

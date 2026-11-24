@@ -23,7 +23,7 @@ pub fn swell(mode: Mode, level: f32, t: f32) -> f32 {
         Mode::Idle => 1.0 + 0.015 * (t * 1.1).sin(),
         Mode::Listening => 1.0 + 0.07 * level,
         Mode::Transcribing | Mode::Thinking => 1.0 + 0.035 * (t * 4.5).sin(),
-        Mode::Speaking => 1.0 + 0.11 * level,
+        Mode::Speaking => 1.0 + (MAX_SWELL - 1.0) * level.clamp(0.0, 1.0),
     }
 }
 
@@ -45,6 +45,14 @@ pub fn mode_code(mode: Mode) -> f32 {
         Mode::Thinking => super::gfx::THINKING,
         Mode::Speaking => super::gfx::SPEAKING,
     }
+}
+
+/// The most the orb grows (with Alfred's voice at its loudest).
+pub const MAX_SWELL: f32 = 1.11;
+
+/// A microphone with a slash through it: listening is off.
+pub fn mic_off(color: Color) -> Shape {
+    mic(color).line([2.5, 2.5], [13.5, 13.5], 1.6, rune::LineCap::Round, color)
 }
 
 /// A microphone glyph in a 16 × 16 view box.

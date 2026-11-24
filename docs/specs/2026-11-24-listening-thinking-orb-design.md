@@ -104,6 +104,18 @@ Alfred v1 worked, but daily use showed five gaps the owner asked to close:
     on live Wikipedia tasks (headless, agent-browser 0.44.0) it finished 1 of 3 against 3 of 3 for
     `qwen3:8b`: it took Wikipedia's "did you mean: rule programming language" suggestion both times it was
     asked for the first result on Rune, though it was faster on the one it finished (34 s against 56 s).
+12a. **Smaller and quieter (added 2026-11-24, at the owner's request).** Answers are spoken, so they are
+    no longer written: only a question waiting for a yes shows, with its Yes and No (and, when Alfred has
+    no voice, its latest answer). Nothing is painted behind text, not even the soft shadow that kept it
+    legible over light windows, because Rune draws a shadow as a box and it showed as one; over a light
+    window the pale text is harder to read, the trade-off of a transparent widget. The orb's square no
+    longer scales: only its inside swells, at most 1.11 times, and the glow and listening rings are bounded
+    (32 points past the orb's edge) so everything stays inside it instead of being cut by the window, which
+    a test checks. Dragging the orb moves Alfred (`window_drag`); it no longer starts listening. The field
+    grows a line at a time up to four, then scrolls, following the end so the latest words stay in view,
+    typed or dictated (`ScrollSpec { stick_bottom: true }`; Rune's `auto_grow` follows the caret only on a
+    keystroke). With the wake word on, the mic button mutes: `Ears::set_muted` closes the microphone
+    (macOS's indicator goes out) and nothing is heard, not even "Alfred", until it is pressed again.
 12. **The panel is a floating orb.** A 300 × 480 point window, borderless, transparent and always on top,
     on every Space (`collection_behavior`), opened on the main display. Alfred is a regular app, in the
     Dock and ⌘Tab. The orb is drawn on the GPU by a Rune compositor in layers: a radial body, screened

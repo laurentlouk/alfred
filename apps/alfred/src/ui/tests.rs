@@ -2,7 +2,7 @@ use alfred_core::{Action, Source, Turn as AgentTurn};
 use rune::{Env, Runtime, TextEdit};
 
 use super::view::{pretty_shortcut, view};
-use super::{ChipState, Mode, SIZE, Ui, scenes};
+use super::{ChipState, Mode, SIZE, Ui, gfx, orb, scenes, view};
 
 fn runtime(ui: Ui) -> Runtime<Ui> {
     let mut rt = Runtime::new(ui, view, SIZE, Env { system_dark: true, scale: 2.0 });
@@ -27,10 +27,67 @@ fn every_scene_renders_the_orb_field_and_footer() {
 }
 
 #[test]
-fn an_empty_panel_suggests_what_to_say() {
+fn nothing_is_written_while_answers_are_spoken() {
+    let mut ui = Ui::demo();
+    ui.ask("open notes".into());
+    ui.on_turn(1, agent_turn("Notes is open.", None));
+    let rt = runtime(ui);
+    assert!(rt.find("turn-0").is_none() && rt.find("alfred-0").is_none() && rt.find("tips").is_none());
+}
+
+#[test]
+fn without_a_voice_the_answer_is_written() {
+    let mut ui = Ui::demo();
+    ui.voice_ready = false;
+    ui.ask("open notes".into());
+    ui.on_turn(1, agent_turn("Notes is open.", None));
+    assert!(runtime(ui).find("alfred-0").is_some());
+}
+
+#[test]
+fn with_the_wake_word_the_mic_turns_listening_off_and_on() {
+    let mut ui = Ui::demo();
+    ui.wake_word = true;
+    let mut rt = runtime(ui);
+    let press = |rt: &mut Runtime<Ui>| {
+        let (x, y) = rt.find("mic").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    };
+    press(&mut rt);
+    assert!(rt.state.muted);
+    assert_eq!(rt.state.caption(), "Not listening.");
+    // Nothing is heard while it's off, even on demand.
+    rt.state.toggle_listening();
+    assert_eq!(rt.state.mode, Mode::Idle);
+    assert!(rt.state.caption().contains("Listening is off"));
+    press(&mut rt);
+    assert!(!rt.state.muted);
+}
+
+#[test]
+fn muting_while_listening_drops_the_command() {
+    let mut ui = Ui::demo();
+    ui.wake_word = true;
+    ui.input = TextEdit::new("typed ");
+    ui.toggle_listening();
+    assert_eq!(ui.mode, Mode::Listening);
+    ui.set_muted(true);
+    assert_eq!(ui.mode, Mode::Idle);
+    assert_eq!(ui.input.text, "typed");
+}
+
+#[test]
+fn the_orb_moves_alfred_and_everything_it_draws_stays_in_its_square() {
     let rt = runtime(Ui::demo());
-    assert!(rt.find("tips").is_some());
-    assert!(rt.find("turn-0").is_none());
+    assert!(rt.find("orb").is_some(), "the orb is there to drag");
+    let half = view::ORB / 2.0 + view::HALO;
+    let reach = gfx::ring_reach(1.0).max(gfx::glow_radius(1.0, 1.0));
+    assert!((view::ORB / 2.0 + reach) * orb::MAX_SWELL <= half, "rings or glow would be cut at the window's edge");
+    for t in 0..200 {
+        assert!(orb::swell(Mode::Speaking, 1.0, t as f32 * 0.05) <= orb::MAX_SWELL);
+    }
 }
 
 #[test]
@@ -42,8 +99,6 @@ fn submitting_starts_a_turn_and_clears_the_field() {
     assert_eq!(ui.turns[0].you, "open notes");
     assert_eq!(ui.mode, Mode::Thinking);
     assert!(ui.input.text.is_empty());
-    let rt = runtime(ui);
-    assert!(rt.find("you-0").is_some() && rt.find("alfred-0").is_some(), "the pending answer shows as …");
 }
 
 #[test]
