@@ -6,8 +6,9 @@
 //! ```
 //!
 //! `ALFRED_LIVE_MODEL` picks the model (default `qwen3:8b`), `ALFRED_LIVE_TASK` the task done on
-//! Wikipedia, and `ALFRED_LIVE_ENGINES` the search engines to try for the spoken answer (default
-//! `google,bing`; empty for none).
+//! Wikipedia (empty for none), `ALFRED_LIVE_QUESTIONS` the questions answered from a search (separated by
+//! `|`), `ALFRED_LIVE_ENGINES` the engines they start on (default `google`; empty for none), and
+//! `ALFRED_LIVE_HEADED=1` shows the window.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -23,7 +24,8 @@ fn program() -> Option<PathBuf> {
 }
 
 fn backend(session: &str, profile: &Path) -> AgentBrowser {
-    AgentBrowser { session: session.into(), ..AgentBrowser::new(program().unwrap(), profile.to_path_buf(), false) }
+    let headed = std::env::var_os("ALFRED_LIVE_HEADED").is_some();
+    AgentBrowser { session: session.into(), ..AgentBrowser::new(program().unwrap(), profile.to_path_buf(), headed) }
 }
 
 fn hands(session: &str, profile: &Path, engine: &str) -> BrowserHands {
@@ -43,17 +45,25 @@ fn live_wikipedia_search_and_a_spoken_weather_answer() {
     let profile = PathBuf::from(std::env::var("ALFRED_LIVE_PROFILE").unwrap_or_else(|_| "/tmp/alfred-live-browser".into()));
     let session = format!("alfred-live-{}", std::process::id());
 
-    let started = Instant::now();
     let task = std::env::var("ALFRED_LIVE_TASK")
         .unwrap_or_else(|_| "search Wikipedia for Rune programming language and tell me the title of the first result".into());
-    let outcome = hands(&session, &profile, "google").browse(&task, Some("https://en.wikipedia.org/wiki/Main_Page"));
-    println!("TASK: {task}\n  -> {outcome:?}\n  ({:.1} s)", started.elapsed().as_secs_f32());
-
-    let engines = std::env::var("ALFRED_LIVE_ENGINES").unwrap_or_else(|_| "google,bing".into());
-    for engine in engines.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+    let mut outcome = Ok(alfred_core::Outcome::new("no task"));
+    if !task.is_empty() {
         let started = Instant::now();
-        let answer = hands(&session, &profile, engine).answer("what is the weather in Paris");
-        println!("ANSWER via {engine}: what is the weather in Paris\n  -> {answer:?}\n  ({:.1} s)", started.elapsed().as_secs_f32());
+        outcome = hands(&session, &profile, "google").browse(&task, Some("https://en.wikipedia.org/wiki/Main_Page"));
+        println!("TASK: {task}\n  -> {outcome:?}\n  ({:.1} s)", started.elapsed().as_secs_f32());
+    }
+
+    let questions = std::env::var("ALFRED_LIVE_QUESTIONS")
+        .unwrap_or_else(|_| "what is the weather in Paris|who won the last Champions League final".into());
+    let engines = std::env::var("ALFRED_LIVE_ENGINES").unwrap_or_else(|_| "google".into());
+    for engine in engines.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        for question in questions.split('|').map(str::trim).filter(|q| !q.is_empty()) {
+            let started = Instant::now();
+            let answer = hands(&session, &profile, engine).answer(question);
+            let at = backend(&session, &profile).call(&args(["get", "url"])).map(|d| d["url"].to_string()).unwrap_or_default();
+            println!("ANSWER from {engine}: {question}\n  -> {answer:?}\n  window on {at} ({:.1} s)", started.elapsed().as_secs_f32());
+        }
     }
 
     backend(&session, &profile).call(&args(["close"])).ok();

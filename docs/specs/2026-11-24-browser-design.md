@@ -90,14 +90,27 @@ the answer".
 
 - With browser hands, `Action::WebSearch` goes to `WebHands::answer(query)`, unless the request named a
   browser ("search … in Safari"), which keeps the old behaviour.
-- `answer` opens the engine's results page in Alfred's window, declines a cookie wall, reads the page
-  text (4,000 characters, every line: "Cloudy" is the weather), and asks the model for
-  `{answer}` (at most 400 characters): one or two sentences in the language of the question, digits for
-  numbers, where it came from ("according to Google's weather card"), and plainly "the results don't say"
-  when they don't. The results stay open.
-- Without a usable answer (the model fails or says nothing), Alfred says "Here are the results for …".
-  When the results can't be read at all, `answer` returns an error and the executor opens them in the
-  default browser as before.
+- `answer` opens the engine's results page in Alfred's window, waits for it to load fully, declines a
+  cookie wall, reads the page text (4,000 characters, every line: "Cloudy" is the weather), and asks the
+  model for `{found, answer}`. `found` comes first, so the model judges the page before it writes. The
+  answer is one or two sentences in the language of the question, digits for numbers, saying where it
+  came from.
+- **The results don't say** (`found` false): Alfred opens the top organic result, reads it from its main
+  heading, and asks again; then the second; at most 2 pages. The result is picked deterministically from
+  `snapshot -i -c -u` (`results.rs`): a link nested with a heading (Google puts the link around an `h3`,
+  Bing and DuckDuckGo an `h2` around the link), whose real address (unwrapped from Bing's
+  `/ck/a?…&u=a1<base64>`, DuckDuckGo's `/l/?uddg=`, Google's `/url?q=`) is off the engine's own domains.
+  Ads go through the engines' click trackers (`aclk`, `googleadservices`, `y.js?ad_domain`), so they
+  are dropped by the same rule. A constrained model choice was not needed: the heuristic held on the live
+  pages. Clicking a result is a link on the page, never an address the model wrote. An answer from a
+  site names it; when the model leaves the site out, "That's from meteofrance.com." is added. The window
+  ends on the page the answer came from, or back on the results when no page had it.
+- **Robot check:** when the configured engine shows one, the search is asked once of DuckDuckGo (Bing
+  when DuckDuckGo is the configured one), and the answer says so: "Google asked me to prove I'm not a
+  robot, so I asked DuckDuckGo. …". The check is never touched. When both engines check, the visible
+  window is left on the check for the user; with the window hidden, the executor opens the results in the
+  default browser.
+- Without a model, Alfred says "Here are the results for …" and stays on them.
 - `WebSearch.reads_outside_text()` is now true: the spoken answer carries web text, so the history keeps
   "Here are the results for …" instead.
 - The decision guide, the `web_search` description and the native system prompt now send questions that
@@ -150,8 +163,22 @@ What the live runs established:
 - `read` puts the navigation first; the page text needs the cleaning in decision 10.
 - Each decision of `qwen3:8b` on a 2,500-token page takes 10 to 20 s. A multi-step task takes about a
   minute.
-- Not yet verified: Google in a headed window with this profile (the default setup). Search engines treat
-  headless Chrome as a robot.
+- Google shows its robot check even headed, on a fresh profile; DuckDuckGo also challenged one headless
+  profile after repeated probes. Hence the fallback engine.
+- Bing renders its results after `load` in some runs: the answer path re-reads the results once when no
+  organic link is there yet.
+
+Answers, headed, fresh profile, `qwen3:8b`, configured engine first:
+
+| Question | Engine | Answer | Time |
+| --- | --- | --- | --- |
+| what is the weather in Paris | Google, robot check, then DuckDuckGo | "…cloudy with temperatures ranging from 4° to 8°, and a humidity of 83%", from DuckDuckGo's results | 21 s |
+| who won the last Champions League final | Google, robot check, then DuckDuckGo | "Paris Saint-Germain won…, beating Arsenal on penalties after a 1–1 draw in 2026", from DuckDuckGo's results | 8 s |
+| what is the weather in Paris | Bing, no card, top result | "7°C with a RealFeel of 5°, cloudy, and a 0% chance of precipitation, according to accuweather.com"; window on AccuWeather | 15 s |
+| what time does the Louvre close today | Bing | "closes today at 6:00 PM", from Bing's results, plus a wrong weekday the model added | 11 s |
+
+The model can still embellish what the page says (the weekday above); the prompt says to use only the
+page.
 
 ## Edge cases
 

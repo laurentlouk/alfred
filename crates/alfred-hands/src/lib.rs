@@ -9,6 +9,7 @@
 pub mod browser;
 pub mod desktop;
 pub mod guard;
+pub mod results;
 pub mod view;
 pub mod web;
 
