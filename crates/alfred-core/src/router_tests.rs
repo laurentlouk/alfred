@@ -280,3 +280,24 @@ fn other_emails_and_other_things_go_to_the_model() {
     assert_eq!(route("read my last note"), None);
     assert!(matches!(route("remind me to answer my last email"), Some(Route::Act(Action::CreateReminder { .. }))));
 }
+
+#[test]
+fn words_about_a_page_are_left_to_the_model_which_knows_where_the_user_is() {
+    for text in [
+        "open the second story",
+        "open the first link",
+        "open the top result",
+        "open the next article",
+        "ouvre le premier lien",
+        "search for wireless headphones on this site",
+        "search for headphones here",
+        "search this page for the price",
+        "cherche des casques sur ce site",
+    ] {
+        assert_eq!(route(text), None, "{text:?}");
+    }
+    // Apps and plain searches still go straight through.
+    assert_eq!(act("open the App Store"), app("App Store"));
+    assert_eq!(act("open notes"), app("Notes"));
+    assert_eq!(act("search for wireless headphones"), search_for("wireless headphones"));
+}

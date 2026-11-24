@@ -127,6 +127,14 @@ user named a page or gave steps.
   address, its own tab first when that is what the user is looking at), switches to it by target id and
   works there; a confirmed click happens in the same tab. Otherwise it opens the same address in its own
   window. That address is the one the user chose to look at, never one read from a page.
+- **C3a. A page in Chrome is worked on in Chrome (added 2026-11-24, at the owner's request).** "This
+  page" means the browser most recently in front, even when the user asks from another app; a task the
+  model sends to a browser app (`use_app` on Chrome) works on that browser's tab with agent-browser, never
+  through the browser's window; and a page whose tab Alfred can't find in Chrome (Safari's, a tab that
+  moved on) opens in Alfred's own tab, signed in the same way. The router no longer reads page words as
+  apps or searches ("open the second story", "search for headphones on this site"): it can't know the
+  page, so the model, which can, decides. `eval/page.toml` (13 requests made in Chrome, the cases saying
+  where the user is) scored 85% before, the two misses the router's, and 100% after, on `qwen3.5:35b`.
 - **C4. Questions keep navigating.** When the results and their top two pages don't answer, the step loop
   takes over with the question ("Find the answer to this question: …") and the answer it ends with is said
   alone, without the steps.

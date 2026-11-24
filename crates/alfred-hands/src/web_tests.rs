@@ -1010,3 +1010,13 @@ fn a_task_on_a_page_still_plans_and_acts() {
     h.browse("open the first result", Some(MAIN)).unwrap();
     assert!(model.schemas.lock().unwrap()[0]["properties"].get("steps").is_some(), "the first call is the plan");
 }
+
+#[test]
+fn in_their_chrome_a_page_whose_tab_cant_be_found_opens_in_alfreds_tab() {
+    // Safari's page, or a tab that moved on: the same address in Alfred's tab, signed in the same way.
+    let web = in_chrome();
+    let (h, _) = answering(&web, vec![found("It's the Wikipedia main page, according to en.wikipedia.org.")]);
+    let o = h.browse_theirs("what is this page", MAIN).unwrap();
+    assert!(o.summary.starts_with("It's the Wikipedia main page"), "{}", o.summary);
+    assert!(web.log().contains(&args(["tab", "new", "--label", "alfred", MAIN])), "{:?}", web.log());
+}

@@ -1070,10 +1070,15 @@ impl WebHands for BrowserHands {
             return Err(format!("{url} is not a web page I can work on."));
         }
         let mut history = Vec::new();
-        if self.browser.shared() {
-            let tab = self.their_tab(url).ok_or("I couldn't find your tab in Chrome.")?;
+        let tab = if self.browser.shared() { self.their_tab(url) } else { None };
+        if let Some(tab) = tab {
             self.call(args(["tab", &tab])).map_err(|e| format!("I couldn't switch to your tab: {e}"))?;
             self.set_working_tab(&tab);
+        } else if self.browser.shared() {
+            // Not a Chrome tab Alfred can find (Safari's page, a tab that moved on): the same address in
+            // Alfred's tab, in the same Chrome, signed in the same way.
+            self.start(Some(url)).map_err(|e| format!("I couldn't open {}: {e}", host_of(url)))?;
+            history.push(format!("opened {}, the page you're on, in my tab", host_of(url)));
         } else {
             // Alfred can't reach the user's own browser: the same page, in Alfred's window. The address is the
             // one the user chose to look at, never one read from a page.

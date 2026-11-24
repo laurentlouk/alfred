@@ -12,6 +12,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How many of the frontmost apps are looked at to get past Alfred.
 const LOOK_AT: usize = 3;
+/// How far down the front-to-back list a browser is looked for.
+const BROWSER_LOOK_AT: usize = 8;
 
 /// Browsers built on Chrome, which share its scripting terms (`URL of active tab of front window`).
 const CHROME_FAMILY: &[&str] = &["Google Chrome", "Google Chrome Canary", "Brave Browser", "Microsoft Edge", "Chromium", "Vivaldi", "Arc"];
@@ -28,14 +30,27 @@ const SAFARI_TAB_SCRIPT: &str = r#"tell application "Safari" to return URL of cu
 
 /// The app the user was in: the frontmost visible app that isn't Alfred, by its display name.
 pub fn front_app(timeout: Duration) -> Option<String> {
+    front_where(timeout, LOOK_AT, |_| true)
+}
+
+/// The browser most recently in front, by its display name: what "this page" means when the user asks
+/// from another app (Alfred's own panel, an editor beside the browser).
+pub fn front_browser(timeout: Duration) -> Option<String> {
+    front_where(timeout, BROWSER_LOOK_AT, is_browser)
+}
+
+/// The frontmost visible app, among the first `look_at`, that isn't Alfred and passes `wanted`.
+fn front_where(timeout: Duration, look_at: usize, wanted: impl Fn(&str) -> bool) -> Option<String> {
     let list = lsappinfo(&["visibleProcessList"], timeout)?;
-    for asn in asns(&list).into_iter().take(LOOK_AT) {
+    for asn in asns(&list).into_iter().take(look_at) {
         let info = lsappinfo(&["info", "-only", "name", "-only", "bundleID", &asn], timeout)?;
         let (name, bundle) = (field(&info, "LSDisplayName"), field(&info, "CFBundleIdentifier"));
         if bundle.as_deref() == Some(ALFRED_BUNDLE) {
             continue;
         }
-        return name;
+        if let Some(n) = name.filter(|n| wanted(n)) {
+            return Some(n);
+        }
     }
     None
 }

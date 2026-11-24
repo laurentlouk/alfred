@@ -25,6 +25,13 @@ pub struct Case {
     /// Whether the model must think it through (true) or answer quickly (false); unchecked when absent.
     #[serde(default)]
     pub thinks: Option<bool>,
+    /// Where the user is when they ask: the app they're in, the site of their tab, the site Alfred's tab shows.
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub site: Option<String>,
+    #[serde(default)]
+    pub alfred_site: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -178,7 +185,11 @@ pub fn run(cases: &[Case], mut make_agent: impl FnMut() -> Agent) -> Report {
     let mut report = Report::default();
     for case in cases {
         let mut agent = make_agent();
-        let exec = DryRun::new();
+        let exec = DryRun::new().with_context(crate::context::Context::new(
+            case.app.as_deref(),
+            case.site.as_deref(),
+            case.alfred_site.as_deref(),
+        ));
         let started = Instant::now();
         let mut used_model = false;
         let mut thought = false;
@@ -199,7 +210,8 @@ pub fn run(cases: &[Case], mut make_agent: impl FnMut() -> Agent) -> Report {
                 "ask" => turn.source == Source::Clarify,
                 tool => first.as_ref().is_some_and(|a| {
                     let v = serde_json::to_value(a).unwrap_or_default();
-                    a.tool_name() == tool
+                    // The tool, or the exact action ("use_their_tab" is the use_browser tool on the user's tab).
+                    (a.tool_name() == tool || v["tool"] == tool)
                         && case.expect.iter().all(|(k, want)| {
                             let field =
                                 v.get(k).map(|f| f.as_str().map(str::to_string).unwrap_or_else(|| f.to_string())).unwrap_or_default();
@@ -225,6 +237,9 @@ mod tests {
             expect: expect.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             says: Vec::new(),
             thinks: None,
+            app: None,
+            site: None,
+            alfred_site: None,
         }
     }
 

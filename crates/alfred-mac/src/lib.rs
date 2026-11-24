@@ -200,6 +200,13 @@ impl Executor for MacExecutor {
                 let said = output.trim();
                 Ok(Outcome::new(if said.is_empty() { action.done_phrase() } else { clip(said, 400) }))
             }
+            // A browser is driven through its pages, with agent-browser, never through its window: a task
+            // "in Chrome" works on the tab it shows.
+            Action::UseApp { app, task } if focus::is_browser(app) && self.web.is_some() => {
+                let url = focus::tab_url(app, focus::TIMEOUT)
+                    .ok_or_else(|| format!("I can't see a web page in {app}; Alfred may need permission to read it (System Settings → Privacy & Security → Automation)."))?;
+                self.web()?.browse_theirs(task, &url)
+            }
             Action::UseApp { app, task } => self.hands()?.use_app(app, task),
             Action::SendMessage { app, to, text } => self.hands()?.send_message(app, to.as_deref(), text),
             Action::PressButton { app, role, name } if app == BROWSER_APP => self.web()?.press(role, name),
@@ -207,10 +214,9 @@ impl Executor for MacExecutor {
             Action::UseBrowser { task, url } => self.web()?.browse(task, url.as_deref()),
             Action::UseTheirTab { task } => {
                 let web = self.web()?;
-                let app = focus::front_app(focus::TIMEOUT).ok_or("I can't tell which app you're in.")?;
-                if !focus::is_browser(&app) {
-                    return Err(format!("You're in {app}, not a browser I can read; open the page and ask me again."));
-                }
+                // The browser most recently in front: the user may ask from another app, or from Alfred.
+                let app =
+                    focus::front_browser(focus::TIMEOUT).ok_or("I don't see a browser window open; open the page and ask me again.")?;
                 let url = focus::tab_url(&app, focus::TIMEOUT)
                     .ok_or_else(|| format!("I can't see a web page in {app}; Alfred may need permission to read it (System Settings → Privacy & Security → Automation)."))?;
                 web.browse_theirs(task, &url)

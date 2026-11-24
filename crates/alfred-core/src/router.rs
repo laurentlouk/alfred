@@ -663,8 +663,68 @@ fn search(t: &str) -> Option<Route> {
         "lookup",
     ];
     let rest = head(t, HEADS)?;
+    if points_at_a_page(rest) {
+        return None;
+    }
     let (q, browser) = trailing_browser(rest);
     Some(search_route(q, browser))
+}
+
+/// Words that point at something on a page ("the second story", "the first link", "this site", "here").
+/// The router doesn't know which page the user is on; the model does, so these are left to it.
+fn points_at_a_page(words: &str) -> bool {
+    const PLACES: &[&str] =
+        &["this site", "this page", "this website", "this tab", "on it", "here", "ce site", "cette page", "cet onglet", "ici"];
+    const ORDINALS: &[&str] = &[
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+        "next",
+        "previous",
+        "last",
+        "top",
+        "latest",
+        "premier",
+        "premiere",
+        "deuxieme",
+        "seconde",
+        "troisieme",
+        "suivant",
+        "suivante",
+        "dernier",
+        "derniere",
+    ];
+    const THINGS: &[&str] = &[
+        "story",
+        "stories",
+        "link",
+        "links",
+        "result",
+        "results",
+        "video",
+        "videos",
+        "article",
+        "articles",
+        "post",
+        "posts",
+        "comment",
+        "comments",
+        "image",
+        "images",
+        "tab",
+        "button",
+        "item",
+        "lien",
+        "liens",
+        "resultat",
+        "resultats",
+        "bouton",
+    ];
+    let padded = format!(" {} ", crate::catalog::fold(words));
+    let has = |list: &[&str]| list.iter().any(|w| padded.contains(&format!(" {w} ")));
+    has(PLACES) || (has(ORDINALS) && has(THINGS))
 }
 
 /// "rune ui in safari" → ("rune ui", Some("Safari")); "rune on google" → ("rune", None).
@@ -717,7 +777,7 @@ fn open(t: &str) -> Option<Route> {
         None => (head(t, APP_HEADS)?, false),
     };
     let rest = rest.trim();
-    if rest.is_empty() || rest.contains(" and ") || rest.split_whitespace().count() > 4 {
+    if rest.is_empty() || rest.contains(" and ") || rest.split_whitespace().count() > 4 || points_at_a_page(rest) {
         return None;
     }
     let (target, browser) = trailing_browser_for_link(rest);
