@@ -69,16 +69,10 @@ const RISKY: &[&str] = &[
     "fermer la session",
     "verrouiller",
     "forcer à quitter",
-    "éteindre",
-    "eteindre",
-    "redémarrer",
-    "redemarrer",
-    "fermer la session",
-    "verrouiller",
-    "forcer à quitter",
 ];
 
-/// What commits on a web page, beyond [`RISKY`]: orders, bookings, sign-ups, donations.
+/// What commits on a web page, beyond [`RISKY`]: orders, bookings, sign-ups, donations, and, signed in as
+/// the user, what speaks for them or grants access (a reply, a share, an invitation, an authorization).
 const WEB_RISKY: &[&str] = &[
     "place order",
     "checkout",
@@ -99,7 +93,30 @@ const WEB_RISKY: &[&str] = &[
     "publish",
     "delete",
     "unsubscribe",
+    "reply",
+    "reply all",
+    "comment",
+    "share",
+    "repost",
+    "retweet",
+    "invite",
+    "authorize",
+    "authorise",
+    "allow",
+    "grant",
+    "save changes",
+    "upload",
+    "follow",
     // French
+    "répondre",
+    "repondre",
+    "commenter",
+    "partager",
+    "inviter",
+    "autoriser",
+    "enregistrer les modifications",
+    "téléverser",
+    "televerser",
     "passer la commande",
     "passer commande",
     "abonner",
@@ -240,6 +257,35 @@ mod tests {
         for n in
             ["Search", "Next page", "Add to list", "Books", "Facebook", "Sign in", "Read more", "Compare prices", "Show 50 results", ""]
         {
+            assert!(!is_risky_on_web(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn signed_in_actions_are_caught() {
+        // In the user's own Chrome, Alfred acts as the user: what speaks for them or grants access waits for a yes.
+        for n in [
+            "Reply",
+            "Reply all",
+            "Comment",
+            "Share",
+            "Repost",
+            "Invite",
+            "Authorize app",
+            "Allow access",
+            "Grant access",
+            "Save changes",
+            "Upload",
+            "Follow",
+            "Répondre",
+            "Partager",
+            "Inviter",
+            "Autoriser",
+            "Enregistrer les modifications",
+        ] {
+            assert!(is_risky_on_web(n), "{n}");
+        }
+        for n in ["Replies (3)", "Shared with me", "Following", "Comments", "Followers"] {
             assert!(!is_risky_on_web(n), "{n}");
         }
     }

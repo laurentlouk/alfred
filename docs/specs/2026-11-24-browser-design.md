@@ -29,7 +29,7 @@ slow and shallow, and they never type with real keystrokes.
 
 - Signing in for the user, solving robot checks, or filling payment forms. The window is visible, so the
   user does those.
-- Using the user's own Chrome profile or cookies.
+- Using the user's own Chrome by default (it is opt-in: decision 2a).
 - A free "open this address" step for the model.
 
 ## Decisions
@@ -43,8 +43,21 @@ slow and shallow, and they never type with real keystrokes.
 2. **Its own profile and session.** The profile lives in `~/Library/Application Support/Alfred/browser`
    (`[browser] profile`): sign-ins the user makes there persist, and the user's own Chrome profiles are
    never touched. The session name `alfred` keeps one browser across requests, so "now open the second
-   result" continues on the same page. *Rejected:* `--auto-connect` to the user's Chrome (Alfred would act
-   with every cookie the user has).
+   result" continues on the same page. *Rejected as the default:* `--auto-connect` to the user's Chrome
+   (Alfred would act with every cookie the user has); it became an opt-in, below.
+2a. **Or the user's own Chrome, when they ask** (`[browser] use_chrome = true`, added 2026-11-24 at the
+   owner's request: they are signed in everywhere there). Alfred runs
+   `agent-browser --session alfred-chrome --auto-connect --json <command>`. Chrome lets it in only once
+   the user turns on remote debugging at `chrome://inspect/#remote-debugging` (Chrome 144 and later),
+   asks the user to allow each new connection, and shows a "controlled by automated test software"
+   banner while attached. Alfred works in one tab of its own, labelled `alfred`: each request switches to
+   it, or opens it when it's gone (`tab new --label alfred [url]`), so the user's tabs are never read,
+   navigated or clicked, and a confirmed click happens in that tab or not at all. The guards hold as they
+   are, plus what speaks for the user once signed in (reply, comment, share, invite, authorize, allow,
+   upload, save changes, follow). When Chrome can't be reached, Alfred says how to allow it.
+   *Rejected:* `--profile Default`, which copies the profile into a separate Chrome: tested live, the copy
+   opened signed out of Google and GitHub although the cookie store was copied whole, and the owner wants
+   their own browser, not a second one.
 3. **Headed by default** (`[browser] headed = true`). The user sees what happens and can step in for a
    robot check or a sign-in code. Headless also changes what sites serve (see below).
 4. **One action, `use_browser { task, url }`.** Safe to run (the guards below hold the risky steps), and
@@ -121,8 +134,9 @@ the answer".
 
 - **Risky clicks** (`guard::is_risky_on_web`): everything `guard::is_risky` names, plus place order,
   checkout, buy now, pay, purchase, subscribe, sign up, register, book, reserve, donate, confirm, submit,
-  send, post, publish, delete, unsubscribe, and French forms (passer la commande, s'abonner, s'inscrire,
-  réserver, faire un don). Such a click ends the run with `Action::PressButton { app: "Browser", role,
+  send, post, publish, delete, unsubscribe, what speaks for a signed-in user (reply, comment, share,
+  repost, invite, authorize, allow, grant, upload, save changes, follow), and French forms (passer la
+  commande, s'abonner, s'inscrire, réserver, faire un don, répondre, partager, inviter, autoriser). Such a click ends the run with `Action::PressButton { app: "Browser", role,
   name }`; on yes, `press` finds it again by role and exact name in a fresh snapshot and clicks it, once
   more after a stale ref.
 - **Secret fields** (`guard::is_secret_field`): never filled when the role, the name, agent-browser's

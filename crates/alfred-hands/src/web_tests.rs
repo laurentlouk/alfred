@@ -37,6 +37,10 @@ struct WebState {
     no_card: bool,
     /// The window is on screen.
     visible: bool,
+    /// The user's own Chrome: Alfred works in a tab of its own.
+    shared: bool,
+    /// Labels of the tabs Alfred opened.
+    tabs: Vec<String>,
 }
 
 const GOOGLE_TEXT: &str = "Accessibility links\n\nSkip to main content\n\n# Search Results\n\nWeather\n\nParis, France\n\nTuesday 14:00\n\nCloudy\n\n12 °C\n\nPrecipitation: 10%";
@@ -183,6 +187,24 @@ impl Browser for FakeWeb {
         s.log.push(args.to_vec());
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         let unknown = |r: &str| Err(BrowserError { message: format!("Unknown ref: {}", r.trim_start_matches('@')), retry_safe: true });
+        // A new tab shows its address (or a blank page) the way `open` does.
+        let a: Vec<&str> = match a.as_slice() {
+            ["tab", "new", "--label", label, rest @ ..] => {
+                s.tabs.push(label.to_string());
+                match rest {
+                    [url] => vec!["open", url],
+                    _ => {
+                        s.go("", "about:blank");
+                        return Ok(json!({"tabId": "t2"}));
+                    }
+                }
+            }
+            ["tab", label] if !s.tabs.iter().any(|t| t == label) => {
+                return Err(BrowserError { message: format!("Tab '{label}' not found"), retry_safe: true });
+            }
+            ["tab", _] => return Ok(json!({"tabId": "t2"})),
+            _ => a,
+        };
         match a.as_slice() {
             ["get", "url"] => Ok(json!({"url": if s.page.is_empty() { "about:blank" } else { s.url.as_str() }})),
             ["get", "title"] => Ok(json!({"title": s.page_data().1})),
@@ -280,6 +302,10 @@ impl Browser for Shared {
 
     fn visible(&self) -> bool {
         self.0.state.lock().unwrap().visible
+    }
+
+    fn shared(&self) -> bool {
+        self.0.state.lock().unwrap().shared
     }
 }
 
@@ -800,4 +826,56 @@ fn robot_checks_are_recognised() {
     assert!(is_robot_check(&json!({"refs": {"e3": {"role": "checkbox", "name": "Je ne suis pas un robot"}}}), "https://x", ""));
     assert!(is_robot_check(&none, "https://duckduckgo.com/?q=x", "Veuillez confirmer que cette recherche a été effectuée par un humain."));
     assert!(!is_robot_check(&none, "https://www.google.com/search?q=weather", GOOGLE_TEXT));
+}
+
+/// The user's own Chrome, on their own tab: a page of search results Alfred must never touch.
+fn in_chrome() -> Shared {
+    let web = Shared::default();
+    {
+        let mut s = web.0.state.lock().unwrap();
+        s.shared = true;
+        s.visible = true;
+        s.page = "results".into();
+        s.url = RESULTS.into();
+    }
+    web
+}
+
+#[test]
+fn in_the_users_chrome_an_answer_opens_alfreds_own_tab_and_reuses_it() {
+    let web = in_chrome();
+    let (h, _) = answering(&web, vec![found(PARIS), found(PARIS)]);
+    assert_eq!(h.answer("weather in Paris").unwrap(), Outcome::new(PARIS));
+    let first = web.log();
+    assert_eq!(first[0], args(["tab", "alfred"]), "Alfred looks for its own tab first");
+    assert_eq!(first[1], args(["tab", "new", "--label", "alfred", "https://www.google.com/search?q=weather+in+Paris"]));
+    assert!(!web.ran("open"), "the user's tab is never navigated");
+
+    h.answer("weather in Paris").unwrap();
+    let later = &web.log()[first.len()..];
+    assert_eq!(later[0], args(["tab", "alfred"]));
+    assert_eq!(later[1][0], "open", "the next request reuses Alfred's tab: {later:?}");
+}
+
+#[test]
+fn in_the_users_chrome_a_task_without_an_address_starts_in_a_blank_tab_of_its_own() {
+    let web = in_chrome();
+    let (h, _) = hands(
+        &web,
+        vec![step("search", json!({"text": "Rune programming language"})), step("done", json!({"note": "Simula comes first."}))],
+        10,
+    );
+    h.browse("what's the first result for Rune programming language", None).unwrap();
+    assert_eq!(web.log()[1], args(["tab", "new", "--label", "alfred"]));
+    assert!(!web.clicked("@e370"), "nothing on the user's page was touched");
+}
+
+#[test]
+fn in_the_users_chrome_a_confirmed_click_happens_only_in_alfreds_tab() {
+    let web = in_chrome();
+    let (h, _) = hands(&web, vec![], 10);
+    // Alfred's tab is gone: the same link on the user's own page is never clicked.
+    let err = h.press("link", "Simula").unwrap_err();
+    assert!(err.contains("Alfred's tab"), "{err}");
+    assert!(!web.ran("click"));
 }

@@ -37,9 +37,15 @@ pub trait Browser: Send + Sync {
     fn visible(&self) -> bool {
         false
     }
+    /// The browser is the user's own Chrome, signed in to their accounts: Alfred works in a tab of its own
+    /// and never reads, navigates or clicks the user's tabs.
+    fn shared(&self) -> bool {
+        false
+    }
 }
 
-/// The real program, in one named session with its own profile folder.
+/// The real program, in one named session: Alfred's own browser with its own profile folder, or the
+/// user's running Chrome.
 pub struct AgentBrowser {
     pub program: PathBuf,
     /// agent-browser's session name: one browser, kept between runs, that no other agent shares.
@@ -48,17 +54,38 @@ pub struct AgentBrowser {
     pub profile: PathBuf,
     /// Show the window, so the user can watch and step in.
     pub headed: bool,
+    /// Attach to the user's running Chrome (`--auto-connect`) instead of launching Alfred's own; `profile`
+    /// and `headed` are then unused.
+    pub chrome: bool,
     pub timeout: Duration,
 }
 
 impl AgentBrowser {
     pub fn new(program: PathBuf, profile: PathBuf, headed: bool) -> Self {
-        Self { program, session: "alfred".into(), profile, headed, timeout: Duration::from_secs(45) }
+        Self { program, session: "alfred".into(), profile, headed, chrome: false, timeout: Duration::from_secs(45) }
+    }
+
+    /// The user's own Chrome, where they are signed in. Chrome lets it in once remote debugging is on
+    /// (`chrome://inspect/#remote-debugging`), and asks the user to allow each new connection.
+    pub fn chrome(program: PathBuf) -> Self {
+        Self {
+            program,
+            session: "alfred-chrome".into(),
+            profile: PathBuf::new(),
+            headed: false,
+            chrome: true,
+            timeout: Duration::from_secs(45),
+        }
     }
 
     /// Everything after the program name: the global options, then the command.
     pub fn command_line(&self, args: &[String]) -> Vec<String> {
-        let mut all = vec!["--session".to_string(), self.session.clone(), "--profile".into(), self.profile.display().to_string()];
+        let mut all = vec!["--session".to_string(), self.session.clone()];
+        if self.chrome {
+            all.push("--auto-connect".into());
+        } else {
+            all.extend(["--profile".to_string(), self.profile.display().to_string()]);
+        }
         if self.headed {
             all.push("--headed".into());
         }
@@ -70,7 +97,9 @@ impl AgentBrowser {
 
 impl Browser for AgentBrowser {
     fn call(&self, args: &[String]) -> Result<Value, BrowserError> {
-        if let Err(e) = std::fs::create_dir_all(&self.profile) {
+        if !self.chrome
+            && let Err(e) = std::fs::create_dir_all(&self.profile)
+        {
             return Err(BrowserError::new(format!("couldn't make the browser profile folder {}: {e}", self.profile.display()), true));
         }
         let mut child = Command::new(&self.program)
@@ -113,12 +142,29 @@ impl Browser for AgentBrowser {
             d.join().ok();
         }
         let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
-        parse_envelope(&out)
+        if self.chrome { parse_envelope(&out).map_err(in_chrome_words) } else { parse_envelope(&out) }
     }
 
     fn visible(&self) -> bool {
-        self.headed
+        self.headed || self.chrome
     }
+
+    fn shared(&self) -> bool {
+        self.chrome
+    }
+}
+
+/// agent-browser's words when the user's Chrome can't be reached, turned into what the user can do.
+pub fn in_chrome_words(e: BrowserError) -> BrowserError {
+    let m = e.message.to_lowercase();
+    if m.contains("no running chrome") || m.contains("remote-debugging") || m.contains("devtoolsactiveport") {
+        return BrowserError::new(
+            "I can't reach your Chrome. Make sure it's open and that remote debugging is on at \
+             chrome://inspect/#remote-debugging; Chrome asks you to allow Alfred the first time.",
+            true,
+        );
+    }
+    e
 }
 
 /// Messages that mean nothing was done.
@@ -184,6 +230,27 @@ mod tests {
         );
         let headless = AgentBrowser { headed: false, ..AgentBrowser::new("x".into(), "/p".into(), true) };
         assert!(!headless.command_line(&args(["get", "url"])).contains(&"--headed".to_string()));
+    }
+
+    #[test]
+    fn in_the_users_chrome_every_call_attaches_and_names_no_profile() {
+        let chrome = AgentBrowser::chrome(PathBuf::from("agent-browser"));
+        assert_eq!(
+            chrome.command_line(&args(["snapshot", "-i"])),
+            args(["--session", "alfred-chrome", "--auto-connect", "--json", "snapshot", "-i"])
+        );
+        assert!(chrome.visible() && chrome.shared(), "the user's Chrome is on screen, and theirs");
+        let own = AgentBrowser::new(PathBuf::from("agent-browser"), PathBuf::from("/tmp/p"), true);
+        assert!(!own.shared());
+    }
+
+    #[test]
+    fn a_chrome_that_cant_be_reached_says_how_to_allow_alfred() {
+        let e = BrowserError::new("No running Chrome instance found. Launch Chrome with --remote-debugging-port or use --cdp.", false);
+        let said = in_chrome_words(e).message;
+        assert!(said.contains("chrome://inspect/#remote-debugging") && said.contains("open"), "{said}");
+        let other = in_chrome_words(BrowserError::new("Unknown ref: e3", true));
+        assert_eq!(other.message, "Unknown ref: e3", "other errors pass through");
     }
 
     #[test]

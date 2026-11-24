@@ -31,7 +31,11 @@ pub fn build(cfg: &Config) -> (Agent, MacExecutor) {
     if cfg.browser.enabled
         && let Some(program) = find_program(&cfg.browser.command)
     {
-        let backend = AgentBrowser::new(program, cfg.browser.profile_dir(), cfg.browser.headed);
+        let backend = if cfg.browser.use_chrome {
+            AgentBrowser::chrome(program)
+        } else {
+            AgentBrowser::new(program, cfg.browser.profile_dir(), cfg.browser.headed)
+        };
         let web = BrowserHands::new(Box::new(backend), llm::from_config(&hands_llm), cfg.browser.max_steps as usize)
             .with_search_engine(&cfg.search.engine);
         exec = exec.with_web_hands(Arc::new(web));

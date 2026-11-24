@@ -103,6 +103,13 @@ fn ask(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Chrome is running with remote debugging on: it writes the port it listens on into its profile folder.
+fn chrome_lets_alfred_in() -> bool {
+    std::env::var_os("HOME")
+        .map(|h| std::path::Path::new(&h).join("Library/Application Support/Google/Chrome/DevToolsActivePort").is_file())
+        .unwrap_or(false)
+}
+
 fn agent_label(cfg: &Config) -> String {
     let server = if cfg.llm.provider == Provider::Ollama { "Ollama" } else { "OpenAI-compatible" };
     match cfg.llm.think_model.as_deref().filter(|m| !m.trim().is_empty() && *m != cfg.llm.model) {
@@ -272,6 +279,13 @@ fn doctor() -> Result<(), String> {
         None => println!("· on-screen actions are off: `brew install agent-desktop` turns them on"),
     }
     match alfred_mac::find_program(&cfg.browser.command) {
+        Some(program) if cfg.browser.enabled && cfg.browser.use_chrome => {
+            line(true, format!("agent-browser at {} (website tasks and spoken search answers, in your Chrome)", program.display()));
+            line(
+                chrome_lets_alfred_in(),
+                "Chrome allows remote debugging, so Alfred can work in a tab of its own (turn it on at chrome://inspect/#remote-debugging, with Chrome open)".to_string(),
+            );
+        }
         Some(program) if cfg.browser.enabled => line(
             true,
             format!(

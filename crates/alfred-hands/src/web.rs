@@ -684,7 +684,24 @@ impl BrowserHands {
         self.settle();
         Ok(())
     }
+
+    /// Where a request starts: at `url` when there is one. In the user's own Chrome that is Alfred's own
+    /// tab, opened the first time and reused after, so the user's tabs are never read, navigated or
+    /// clicked; without an address a new tab starts blank.
+    fn start(&self, url: Option<&str>) -> Result<(), BrowserError> {
+        if !self.browser.shared() || self.call(args(["tab", ALFRED_TAB])).is_ok() {
+            return url.map_or(Ok(()), |u| self.open(u));
+        }
+        let mut new_tab = args(["tab", "new", "--label", ALFRED_TAB]);
+        new_tab.extend(url.map(str::to_string));
+        self.call(new_tab)?;
+        self.settle();
+        Ok(())
+    }
 }
+
+/// The label of Alfred's tab in the user's own Chrome.
+const ALFRED_TAB: &str = "alfred";
 
 /// Roles whose unnamed elements are never clicked: they act, and without a name the guard can't tell how.
 const UNNAMED_REFUSED: &[&str] = &["button", "link", "menuitem", "image", "img", "tab", "generic"];
@@ -702,8 +719,10 @@ impl WebHands for BrowserHands {
             if web_url(u).as_deref() != Some(u) {
                 return Err(format!("{u} is not a web address I can open."));
             }
-            self.open(u).map_err(|e| format!("I couldn't open {}: {e}", host_of(u)))?;
+            self.start(Some(u)).map_err(|e| format!("I couldn't open {}: {e}", host_of(u)))?;
             history.push(format!("opened {}", host_of(u)));
+        } else {
+            self.start(None).map_err(|e| e.to_string())?;
         }
         let mut circling = Circling::default();
         let mut plan: Option<Vec<String>> = None;
@@ -853,6 +872,10 @@ impl WebHands for BrowserHands {
     }
 
     fn press(&self, role: &str, name: &str) -> Result<Outcome, String> {
+        // In the user's Chrome the click happens in Alfred's tab or not at all.
+        if self.browser.shared() && self.call(args(["tab", ALFRED_TAB])).is_err() {
+            return Err(format!("Alfred's tab in Chrome is closed, so I didn't click “{name}”."));
+        }
         for attempt in 0..2 {
             let snap = self.snapshot(false)?;
             let found = snap["refs"].as_object().and_then(|refs| {
@@ -883,7 +906,10 @@ impl WebHands for BrowserHands {
         let second = if first == "duckduckgo" { "bing" } else { "duckduckgo" };
         let mut blocked: Option<&str> = None;
         for engine in [first, second] {
-            self.open(&search_url(engine, query)).map_err(|e| format!("I couldn't open the search: {e}"))?;
+            let results = search_url(engine, query);
+            // The first engine starts the request; the second loads in the same tab.
+            if engine == first { self.start(Some(&results)) } else { self.open(&results) }
+                .map_err(|e| format!("I couldn't open the search: {e}"))?;
             let results = self.read_for_answer(true)?;
             if is_robot_check(&results.0, &results.1, &results.2) {
                 // Never answered: the other engine is asked instead, once.

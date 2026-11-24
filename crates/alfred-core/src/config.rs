@@ -66,6 +66,11 @@ pub struct BrowserConfig {
     pub profile: String,
     /// Show the browser window, so the user can watch and step in for a CAPTCHA or a sign-in code.
     pub headed: bool,
+    /// Work in the user's own running Chrome, where they are signed in, instead of Alfred's window: in a
+    /// tab of Alfred's own, never the user's tabs. Chrome lets Alfred in once remote debugging is on at
+    /// `chrome://inspect/#remote-debugging`, and asks the user to allow it. `profile` and `headed` are
+    /// then unused.
+    pub use_chrome: bool,
     /// The most steps one request may take.
     pub max_steps: u32,
 }
@@ -77,6 +82,7 @@ impl Default for BrowserConfig {
             command: "agent-browser".into(),
             profile: home_dir().join("browser").display().to_string(),
             headed: true,
+            use_chrome: false,
             max_steps: 10,
         }
     }
@@ -319,6 +325,9 @@ mod tests {
         assert!(c.browser.profile_dir().ends_with("Browsers/alfred") && !c.browser.profile_dir().starts_with("~"));
         let blank = BrowserConfig { profile: " ".into(), ..BrowserConfig::default() };
         assert_eq!(blank.profile_dir(), home_dir().join("browser"));
+        assert!(!b.use_chrome, "the user's own Chrome only when they ask");
+        let mine: Config = toml::from_str("[browser]\nuse_chrome = true\n").unwrap();
+        assert!(mine.browser.use_chrome);
     }
 
     #[test]

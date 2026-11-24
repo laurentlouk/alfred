@@ -190,6 +190,8 @@ brew install agent-browser
 
 A question that needs the web ("what's the weather in Paris", "who won the last Champions League final") opens the search results in that window, and Alfred reads them and answers in a sentence, saying where the answer came from. A task that takes a few steps on a site ("on amazon.fr, find the price of the Kindle Paperwhite", "compare the AirPods Pro on apple.com and fnac.com") runs the same look-decide-act loop as on screen, at most 10 steps, with the model from `[desktop] model`. Alfred only opens an address you said; it follows links on the page, goes back or searches, but never opens an address it read on a page. It never types passwords, card numbers or sign-in codes, and a Place order, Book, Subscribe or Sign up click comes back to you as a Yes/No question. Cookie walls are declined ("Reject all"); a robot check is left for you to answer in the window. The window stays open on the last page so you can see it and take over.
 
+**In your own Chrome.** Already signed in everywhere in Chrome? Set `[browser] use_chrome = true` and Alfred works in your Chrome instead, in a tab of its own labelled for it: it never reads, navigates or clicks your other tabs. Chrome lets it in once you turn on remote debugging at `chrome://inspect/#remote-debugging` (Chrome 144 or later), asks you to allow Alfred when it connects, and shows a banner while it does. Signed in, Alfred acts as you, so a Reply, Share, Invite, Authorize or Follow click waits for your yes too, as do the clicks above.
+
 ## Configuration
 
 `~/Library/Application Support/Alfred/config.toml` (`ALFRED_HOME` moves the folder). Every field has a default:
@@ -234,6 +236,7 @@ enabled = true               # website tasks and spoken search answers, when age
 command = "agent-browser"
 profile = "~/Library/Application Support/Alfred/browser"   # Alfred's own Chrome profile
 headed = true                # show the window, so you can watch and step in
+use_chrome = false           # true: work in your own Chrome, in a tab of its own
 max_steps = 10
 ```
 
