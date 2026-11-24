@@ -109,6 +109,24 @@ tool = "get_time"
 text = "take a note"
 tool = "ask"
 
+[[case]]
+text = "read my last email"
+tool = "read_mail"
+
+[[case]]
+text = "reply to my latest email saying I'll be there at 3"
+tool = "reply_mail"
+expect = { text = "there at 3" }
+
+[[case]]
+text = "réponds au dernier mail de Marie en disant merci"
+tool = "reply_mail"
+expect = { from = "marie", text = "merci" }
+
+[[case]]
+text = "anything new in my inbox?"
+tool = "read_mail"
+
 # --- model-shaped: looser phrasings the router leaves alone -----------------------------------------
 [[case]]
 text = "could you jot it down that the plumber comes at 3"
@@ -192,3 +210,12 @@ tool = "chat"
 [[case]]
 text = "what can you do?"
 tool = "chat"
+
+[[case]]
+text = "has anyone emailed me this morning?"
+tool = "read_mail"
+
+[[case]]
+text = "tell whoever wrote to me last that I got it, thanks"
+tool = "reply_mail"
+expect = { text = "got it" }

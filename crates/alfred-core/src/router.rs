@@ -6,7 +6,7 @@
 //! the side of `None`: a wrong action is worse than a slower right one.
 
 use crate::action::Action;
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, fold};
 use crate::normalize::{app_name, browser_name, capitalize, is_known_app, site_url, strip_prefix_ci, strip_suffix_ci, title_from, url};
 
 /// What the router decided.
@@ -24,7 +24,13 @@ pub enum Route {
 pub enum Slot {
     NoteBody,
     ReminderTitle,
-    SearchQuery { browser: Option<String> },
+    SearchQuery {
+        browser: Option<String>,
+    },
+    /// What to say in a reply to the newest email (from `from`).
+    ReplyText {
+        from: Option<String>,
+    },
 }
 
 impl Slot {
@@ -39,6 +45,8 @@ impl Slot {
             Slot::NoteBody => note_action(None, &a),
             Slot::ReminderTitle => reminder_action(&a)?,
             Slot::SearchQuery { browser } => Action::WebSearch { query: a, browser: browser.clone() },
+            // The answer is the reply itself: kept as said, with its punctuation.
+            Slot::ReplyText { from } => Action::DraftReply { from: from.clone(), text: capitalize(answer.trim()) },
         })
     }
 }
@@ -57,7 +65,13 @@ pub fn route_with(text: &str, catalog: &Catalog) -> Option<Route> {
     if is_time_question(&t.to_lowercase()) {
         return Some(Route::Act(Action::GetTime));
     }
-    shortcut(&t, catalog).or_else(|| note(&t)).or_else(|| reminder(&t)).or_else(|| search(&t)).or_else(|| quit(&t)).or_else(|| open(&t))
+    shortcut(&t, catalog)
+        .or_else(|| mail(&t, text))
+        .or_else(|| note(&t))
+        .or_else(|| reminder(&t))
+        .or_else(|| search(&t))
+        .or_else(|| quit(&t))
+        .or_else(|| open(&t))
 }
 
 // ---- shortcuts ------------------------------------------------------------------------------------
@@ -102,6 +116,15 @@ fn shortcut(t: &str, catalog: &Catalog) -> Option<Route> {
 /// Drop wake words, politeness and trailing punctuation: "Hey Alfred, could you open Notes for me?" →
 /// "open Notes".
 pub fn clean(text: &str) -> String {
+    clean_with(text, true)
+}
+
+/// Only the start of [`clean`]: the end of a request can be text to keep as said ("…saying thanks!").
+fn clean_start(text: &str) -> String {
+    clean_with(text, false)
+}
+
+fn clean_with(text: &str, end: bool) -> String {
     const LEADING: &[&str] = &[
         "hey alfred",
         "hi alfred",
@@ -127,7 +150,10 @@ pub fn clean(text: &str) -> String {
     let mut s = text.trim().to_string();
     loop {
         let before = s.clone();
-        s = s.trim().trim_end_matches(['.', '!', '?', ',', ' ']).trim_start_matches([',', ' ', '-']).to_string();
+        s = s.trim().trim_start_matches([',', ' ', '-']).to_string();
+        if end {
+            s = s.trim_end_matches(['.', '!', '?', ',', ' ']).to_string();
+        }
         for p in LEADING {
             if let Some(rest) = strip_prefix_ci(&s, p)
                 && (rest.is_empty() || rest.starts_with([' ', ',']))
@@ -136,7 +162,7 @@ pub fn clean(text: &str) -> String {
                 break;
             }
         }
-        for p in TRAILING {
+        for p in TRAILING.iter().filter(|_| end) {
             if let Some(rest) = strip_suffix_ci(&s, p)
                 && (rest.is_empty() || rest.ends_with([' ', ',']))
             {
@@ -199,6 +225,219 @@ const PLACEHOLDERS: &[&str] = &["something", "something down", "it", "this", "th
 fn is_placeholder(s: &str) -> bool {
     let l = s.trim().to_lowercase();
     l.is_empty() || PLACEHOLDERS.contains(&l.as_str())
+}
+
+// ---- mail -----------------------------------------------------------------------------------------
+
+/// "read my last email", "who sent my latest email", "lis mon dernier mail", "reply to my last email
+/// saying I'll be there at 3", "réponds au dernier mail de Marie : merci". Only the newest email (from
+/// someone, when named) is reachable this way; "the email about the invoice" goes to the model.
+///
+/// `t` is the cleaned request; the reply's text is taken from `raw` as said, with its punctuation and a
+/// closing "thanks" that [`clean`] would drop.
+fn mail(t: &str, raw: &str) -> Option<Route> {
+    let f = fold(t);
+    const WHO_LAST: &[&str] = &[
+        "who emailed me last",
+        "who emailed me most recently",
+        "who wrote to me last",
+        "qui m a ecrit en dernier",
+        "qui m a envoye un mail en dernier",
+    ];
+    // "anything new in my inbox?": the newest email answers it. qwen3:0.6b chatted instead (and claimed
+    // the inbox was empty), so these are the router's.
+    const INBOX: &[&str] = &[
+        "anything new in my inbox",
+        "what s new in my inbox",
+        "what s in my inbox",
+        "check my inbox",
+        "check my email",
+        "check my emails",
+        "check my mail",
+        "any new email",
+        "any new emails",
+        "any new mail",
+        "do i have new email",
+        "do i have new emails",
+        "do i have any new email",
+        "do i have any new emails",
+        "do i have new mail",
+        "do i have any new mail",
+        "did i get any new email",
+        "did i get any email",
+        "have i got new mail",
+        "j ai des nouveaux mails",
+        "est ce que j ai des nouveaux mails",
+        "des nouveaux mails",
+        "quoi de neuf dans ma boite mail",
+    ];
+    if WHO_LAST.contains(&f.as_str()) || INBOX.contains(&f.as_str()) {
+        return Some(Route::Act(Action::ReadMail { from: None }));
+    }
+    let said = drop_draft_words(&clean_start(raw));
+    let t = said.as_str();
+    const REPLY_HEADS: &[&str] = &[
+        "draft a reply to",
+        "write a reply to",
+        "draft a response to",
+        "write a response to",
+        "prepare a reply to",
+        "write back to",
+        "reply back to",
+        "reply to",
+        "respond to",
+        "answer",
+        "rédige une réponse à",
+        "écris une réponse à",
+        "réponds à",
+        "réponds au",
+        "répondre à",
+        "répondre au",
+        "reponds a",
+        "reponds au",
+    ];
+    if let Some(rest) = head(t, REPLY_HEADS) {
+        let (object, text) = split_reply_text(rest);
+        let from = latest_mail(&clean(object))?;
+        return Some(reply_route(from, text, None));
+    }
+    const READ_HEADS: &[&str] = &[
+        "read me",
+        "read out",
+        "read",
+        "what's in",
+        "what is in",
+        "what's",
+        "whats",
+        "what is",
+        "what does",
+        "what did",
+        "who sent me",
+        "who sent",
+        "who wrote",
+        "check",
+        "show me",
+        "tell me about",
+        "lis-moi",
+        "lis moi",
+        "lis",
+        "quel est",
+        "c'est quoi",
+        "qui a envoyé",
+        "qui a écrit",
+    ];
+    let rest = head(t, READ_HEADS)?;
+    // "read my last email and reply saying …"
+    let (object, then) = match find_ci(rest, &[" and ", " et ", ", then ", " then "]) {
+        Some((at, sep)) => (&rest[..at], Some(rest[at + sep.len()..].trim())),
+        None => (rest, None),
+    };
+    let from = latest_mail(&clean(object))?;
+    match then {
+        None => Some(Route::Act(Action::ReadMail { from })),
+        Some(then) => {
+            let rest = head(then, &["draft a reply", "write a reply", "reply", "respond", "answer", "réponds", "répondre"])?;
+            let rest = strip_words(rest, &["to it", "to that", "to them", "to him", "to her", "lui", "y"]);
+            let text =
+                head(rest, &["saying", "and say", "and tell them", "to say", "telling them", "with", "en disant", "pour dire", "et dis"])
+                    .unwrap_or(rest);
+            let text = Some(text).filter(|s| !s.trim().is_empty());
+            Some(reply_route(from.clone(), text, Some(Action::ReadMail { from })))
+        }
+    }
+}
+
+/// "… as a draft", "… and don't send it": Alfred only ever drafts, so these words add nothing.
+fn drop_draft_words(t: &str) -> String {
+    const WORDS: &[&str] = &[
+        ", and leave it as a draft",
+        " and leave it as a draft",
+        " and leave it in drafts",
+        ", but don't send it",
+        " but don't send it",
+        " and don't send it",
+        " without sending it",
+        " sans l'envoyer",
+        " en tant que brouillon",
+        " en brouillon",
+        " as a draft",
+        " in a draft",
+        " in draft",
+        " as draft",
+    ];
+    let mut s = t.to_string();
+    for w in WORDS {
+        while let Some((at, _)) = find_ci(&s, &[*w]) {
+            s.replace_range(at..at + w.len(), "");
+        }
+    }
+    s.trim().to_string()
+}
+
+/// The first of `needles` found in `hay` (ASCII case-insensitive): its byte position and the needle.
+fn find_ci<'n>(hay: &str, needles: &[&'n str]) -> Option<(usize, &'n str)> {
+    (0..hay.len())
+        .filter(|&i| hay.is_char_boundary(i))
+        .find_map(|i| needles.iter().find(|n| strip_prefix_ci(&hay[i..], n).is_some()).map(|n| (i, *n)))
+}
+
+/// Split "my last email saying I'll be late" into the email ("my last email") and the reply's text.
+fn split_reply_text(s: &str) -> (&str, Option<&str>) {
+    const SAYS: &[&str] = &[
+        " saying ",
+        " and say ",
+        " and tell them ",
+        " and tell him ",
+        " and tell her ",
+        " to say ",
+        " telling them ",
+        " with ",
+        " en disant ",
+        " pour dire ",
+        " et dis-lui ",
+        " et dis ",
+        ": ",
+        " : ",
+    ];
+    match find_ci(s, SAYS) {
+        Some((at, sep)) => (s[..at].trim(), Some(s[at + sep.len()..].trim())),
+        None => (s.trim(), None),
+    }
+}
+
+/// Whether `object` means the newest email: "my last email", "the latest e-mail from Ada", "mon dernier
+/// mail de Marie". `Some(from)` when it does (with the sender, if named); `None` for anything else, such as
+/// "the email about the invoice" or "my last note".
+fn latest_mail(object: &str) -> Option<Option<String>> {
+    let (what, from) = match find_ci(object, &[" from ", " de ", " d'", " d’"]) {
+        Some((at, sep)) => (&object[..at], Some(object[at + sep.len()..].trim())),
+        None => (object, None),
+    };
+    const NOUNS: &[&str] = &["email", "emails", "mail", "mails", "courriel", "courriels"];
+    const RECENT: &[&str] = &["last", "latest", "newest", "recent", "dernier", "derniere"];
+    const FILLER: &[&str] = &[
+        "my", "the", "to", "me", "most", "e", "mon", "ma", "mes", "le", "la", "les", "au", "a", "l", "plus", "say", "says", "about", "in",
+        "inbox",
+    ];
+    let words: Vec<String> = fold(what).split(' ').map(String::from).collect();
+    let has = |set: &[&str]| words.iter().any(|w| set.contains(&w.as_str()));
+    let only = words.iter().all(|w| NOUNS.contains(&w.as_str()) || RECENT.contains(&w.as_str()) || FILLER.contains(&w.as_str()));
+    if !(has(NOUNS) && has(RECENT) && only) {
+        return None;
+    }
+    let from = from
+        .map(|f| strip_words(f, &["the", "le", "la"]).trim().trim_matches(['"', '“', '”']).trim().to_string())
+        .filter(|f| !f.is_empty());
+    Some(from)
+}
+
+/// A reply with its text, or a question for it (after `first`, such as reading the email aloud).
+fn reply_route(from: Option<String>, text: Option<&str>, first: Option<Action>) -> Route {
+    let text = text.map(|s| s.trim().trim_matches(['"', '“', '”', '«', '»']).trim()).filter(|s| !is_placeholder(s));
+    match text {
+        Some(s) => Route::Act(Action::DraftReply { from, text: capitalize(s) }),
+        None => Route::Ask { question: "What shall I say in the reply?".into(), slot: Slot::ReplyText { from }, first },
+    }
 }
 
 // ---- notes ----------------------------------------------------------------------------------------

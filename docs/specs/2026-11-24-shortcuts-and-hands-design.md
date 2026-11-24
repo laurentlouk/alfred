@@ -104,7 +104,8 @@ done), and losing the thread (a short plan is written first and shown at every s
 What they established: reading works on 4B; menu navigation needs 8B (now the default for
 `[desktop] model`); and Mail's compose body can't be filled through the accessibility tree without
 physical keystrokes, which Alfred doesn't use. Mail drafts belong to a typed tool on Mail's own scripting
-(`reply`, then set the content); on-screen control is for apps without scripting or Shortcuts.
+(`reply`, then set the content); on-screen control is for apps without scripting or Shortcuts. That tool
+now exists: see `2026-11-24-mail-design.md`.
 
 The router handled the 4 requests that named a shortcut, at 100%. `qwen3:4b`'s miss: "switch on the light"
 picked "Lights Off", which the confirmation for model-picked shortcuts catches. On the owner's own shortcuts

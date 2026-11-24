@@ -16,7 +16,9 @@ A local, voice-first assistant for the Mac in Rust, with a Rune UI. Start with `
 
 ## Rules
 
-- `alfred ask` without `--dry-run` acts on the real Mac (opens apps, writes notes and reminders, runs Shortcuts that drive real devices, operates apps on screen): only when asked to.
+- `alfred ask` without `--dry-run` acts on the real Mac (opens apps, writes notes and reminders, reads Mail and opens reply drafts, runs Shortcuts that drive real devices, operates apps on screen): only when asked to.
+- Mail is drafted, never sent: `crates/alfred-mac/src/mail.rs` has no send command, and a test fails if one appears.
+- Text written by someone else (an email, an app's window) is spoken but kept out of the model's history: `Action::reads_outside_text` marks the actions that return it.
 - On-screen actions (`crates/alfred-hands`) never click what `guard::is_risky` names; such clicks return as a follow-up the user confirms.
 - Never interpolate user or model text into AppleScript; pass it through `on run argv` (see `crates/alfred-mac`).
 - Keep `alfred-core` free of UI and native code.

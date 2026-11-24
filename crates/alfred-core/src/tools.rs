@@ -69,6 +69,19 @@ pub const TOOLS: &[ToolSpec] = &[
         params: &[p("url", "string", "The address, such as https://example.com.", true)],
     },
     ToolSpec { name: "get_time", description: "Tell the current local time and date.", params: &[] },
+    ToolSpec {
+        name: "read_mail",
+        description: "Read the newest email in Mail's inbox: who sent it, when, its subject and how it begins.",
+        params: &[p("from", "string", "Only if the user names the sender: part of their name or address.", false)],
+    },
+    ToolSpec {
+        name: "reply_mail",
+        description: "Open a reply to the newest email in Mail with the given text, as a draft the user checks and sends. It never sends.",
+        params: &[
+            p("text", "string", "What the reply says, in the user's words.", true),
+            p("from", "string", "Only if the user names the sender of the email to answer.", false),
+        ],
+    },
 ];
 
 /// The `tools` array in the shape Ollama and OpenAI-compatible servers both accept.
@@ -99,7 +112,7 @@ pub fn tools_json_for(catalog: &Catalog) -> Value {
                 "type": "function",
                 "function": {
                     "name": "use_app",
-                    "description": "Operate another app on screen to do something no other tool can, such as replying to an email as a draft.",
+                    "description": "Operate another app on screen to do something no other tool can, such as changing a setting in an app.",
                     "parameters": { "type": "object", "properties": {
                         "app": { "type": "string", "description": "The app's name, such as Mail." },
                         "text": { "type": "string", "description": "The task, in one sentence." },
@@ -159,6 +172,7 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
             "query": { "type": "string", "maxLength": 300 },
             "url": { "type": "string", "maxLength": 500 },
             "minutes": { "type": "integer" },
+            "from": { "type": "string", "maxLength": 100 },
             "reply": { "type": "string", "maxLength": 600 },
         },
         "required": ["action"],
@@ -179,7 +193,7 @@ pub fn decision_guide_for(catalog: &Catalog) -> String {
         ));
     }
     if catalog.hands {
-        guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as replying to an email (field app: the app; field text: the task in one sentence).");
+        guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as changing a setting (field app: the app; field text: the task in one sentence).");
     }
     guide
 }
@@ -192,6 +206,8 @@ create_note: save a note in Apple Notes (field text: the note's content).
 create_reminder: add a reminder (field text: what to do; field minutes only if the user gave a delay).
 web_search: search the web (field query).
 open_url: open a website (field url).
+read_mail: the user asks about their email or inbox (field from only if they name a sender).
+reply_mail: answer the newest email (field text: what the reply says; field from only if they name a sender).
 get_time: the user asks the time, the date or the day.
 chat: anything else; answer in one or two short sentences in field reply.";
 
@@ -313,6 +329,15 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
             Ok(Action::OpenUrl { url: u, browser: None })
         }
         "get_time" | "time" | "get_date" | "current_time" => Ok(Action::GetTime),
+        "read_mail" | "read_email" | "read_last_email" | "read_latest_email" | "check_mail" | "check_email" => {
+            Ok(Action::ReadMail { from: string_arg(&args, &["from", "sender", "who"]) })
+        }
+        "reply_mail" | "reply_email" | "reply_to_email" | "draft_reply" | "answer_email" | "reply" => {
+            // An empty text opens the reply for the user to write; it is never filled from the request itself,
+            // which is an instruction to Alfred, not the reply.
+            let text = string_arg(&args, &["text", "body", "message", "content"]).map(|t| capitalize(&t)).unwrap_or_default();
+            Ok(Action::DraftReply { from: string_arg(&args, &["from", "sender", "to", "recipient"]), text })
+        }
         "run_shortcut" | "shortcut" | "run_shortcuts" | "shortcuts" if !catalog.shortcuts.is_empty() => {
             let raw = string_arg(&args, &["shortcut", "name", "title"]).ok_or("run_shortcut needs the shortcut's name in \"shortcut\".")?;
             let name = catalog
@@ -475,6 +500,24 @@ mod tests {
         );
         assert!(action_from_call("use_app", &json!({"app": "Mail", "text": "x"}), "").is_err(), "no hands, no tool");
         assert!(action_from_call_in("press_button", &json!({"app": "Mail", "name": "Send"}), "", &c).is_err(), "the model cannot press");
+    }
+
+    #[test]
+    fn mail_calls_take_text_and_an_optional_sender() {
+        assert_eq!(action_from_call("read_mail", &json!({}), "read my last email").unwrap(), Action::ReadMail { from: None });
+        assert_eq!(action_from_call("read_email", &json!({"sender": "Ada"}), "").unwrap(), Action::ReadMail { from: Some("Ada".into()) });
+        assert_eq!(
+            action_from_call("reply_mail", &json!({"text": "i'll be there at 3", "from": "Ada"}), "").unwrap(),
+            Action::DraftReply { from: Some("Ada".into()), text: "I'll be there at 3".into() }
+        );
+        assert_eq!(
+            action_from_call("reply_mail", &json!({}), "answer the newest mail").unwrap(),
+            Action::DraftReply { from: None, text: String::new() },
+            "no text: the reply opens empty instead of quoting the request"
+        );
+        let (n, a) = decision_to_call(&json!({"action": "reply_mail", "text": "Thanks!", "reply": "Done"})).unwrap();
+        assert_eq!(action_from_call(&n, &a, "").unwrap(), Action::DraftReply { from: None, text: "Thanks!".into() });
+        assert!(decision_schema()["properties"]["action"]["enum"].as_array().unwrap().contains(&json!("read_mail")));
     }
 
     #[test]

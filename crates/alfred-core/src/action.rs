@@ -32,6 +32,12 @@ pub enum Action {
     UseApp { app: String, task: String },
     /// Click one named control in an app: the irreversible step a [`Action::UseApp`] run stopped before.
     PressButton { app: String, role: String, name: String },
+    /// Read the newest email in Mail's inbox, or the newest from `from` (part of a name or an address).
+    ReadMail { from: Option<String> },
+    /// Open a reply to the newest email (from `from` when given) with `text` in it. Alfred never sends
+    /// mail: the reply waits in Mail for the user to check and send.
+    #[serde(rename = "reply_mail")]
+    DraftReply { from: Option<String>, text: String },
 }
 
 /// How careful Alfred must be before running an action.
@@ -57,7 +63,16 @@ impl Action {
             Action::RunShortcut { .. } => "run_shortcut",
             Action::UseApp { .. } => "use_app",
             Action::PressButton { .. } => "press_button",
+            Action::ReadMail { .. } => "read_mail",
+            Action::DraftReply { .. } => "reply_mail",
         }
+    }
+
+    /// Its outcome carries text someone else wrote (an email, an app's window). The conversation history
+    /// keeps [`Action::done_phrase`] instead, so the model never reads that text as part of the
+    /// conversation on a later turn.
+    pub fn reads_outside_text(&self) -> bool {
+        matches!(self, Action::ReadMail { .. } | Action::UseApp { .. })
     }
 
     /// Shortcuts drive real devices and a small model can pick the wrong one, so running one confirms
@@ -82,6 +97,10 @@ impl Action {
             Action::RunShortcut { name, .. } => format!("Running “{}”", clip(name, 32)),
             Action::UseApp { app, .. } => format!("Using {app}"),
             Action::PressButton { app, name, .. } => format!("Clicking “{}” in {app}", clip(name, 24)),
+            Action::ReadMail { from: None } => "Reading your latest email".into(),
+            Action::ReadMail { from: Some(f) } => format!("Reading the latest email from {}", clip(f, 24)),
+            Action::DraftReply { from: None, .. } => "Drafting a reply".into(),
+            Action::DraftReply { from: Some(f), .. } => format!("Drafting a reply to {}", clip(f, 24)),
         }
     }
 
@@ -98,6 +117,10 @@ impl Action {
             Action::RunShortcut { name, .. } => format!("Run the shortcut “{}”", clip(name, 32)),
             Action::UseApp { app, task } => format!("In {app}: {}", clip(task, 40)),
             Action::PressButton { app, name, .. } => format!("Click “{}” in {app}", clip(name, 32)),
+            Action::ReadMail { from: None } => "Read the latest email".into(),
+            Action::ReadMail { from: Some(f) } => format!("Read the latest email from {}", clip(f, 28)),
+            Action::DraftReply { from: None, .. } => "Draft a reply to the latest email".into(),
+            Action::DraftReply { from: Some(f), .. } => format!("Draft a reply to {}", clip(f, 28)),
         }
     }
 
@@ -127,6 +150,8 @@ impl Action {
             Action::RunShortcut { name, .. } => format!("I've run “{name}”."),
             Action::UseApp { app, .. } => format!("Done in {app}."),
             Action::PressButton { app, name, .. } => format!("I've clicked “{name}” in {app}."),
+            Action::ReadMail { .. } => "I've read you the latest email.".into(),
+            Action::DraftReply { .. } => "I've opened a reply in Mail for you to check and send.".into(),
         }
     }
 }
@@ -250,6 +275,17 @@ mod tests {
             Action::OpenUrl { url: "https://www.youtube.com/watch?v=1".into(), browser: None }.progress_label(),
             "Opening youtube.com"
         );
+    }
+
+    #[test]
+    fn mail_actions_are_safe_and_reading_one_hides_its_text_from_history() {
+        let read = Action::ReadMail { from: Some("Ada".into()) };
+        let reply = Action::DraftReply { from: None, text: "See you at 3.".into() };
+        assert_eq!((read.risk(), reply.risk()), (Risk::Safe, Risk::Safe), "a draft is never sent");
+        assert_eq!(read.progress_label(), "Reading the latest email from Ada");
+        assert_eq!(reply.tool_name(), "reply_mail");
+        assert!(read.reads_outside_text() && !reply.reads_outside_text());
+        assert_eq!(serde_json::to_value(&reply).unwrap()["text"], "See you at 3.");
     }
 
     #[test]

@@ -1,9 +1,10 @@
-//! Alfred's hands on a Mac: `open` for apps and links, `osascript` for Notes, Reminders and quitting.
+//! Alfred's hands on a Mac: `open` for apps and links, `osascript` for Notes, Reminders, Mail and quitting.
 //!
 //! User text never becomes AppleScript source. Every script here is a constant that reads its inputs from
 //! `on run argv`, and the inputs travel as separate process arguments, so a note body such as
 //! `" & do shell script "…` is just text.
 
+pub mod mail;
 pub mod shortcuts;
 
 use std::io::Read;
@@ -150,6 +151,8 @@ impl Executor for MacExecutor {
             }
             Action::UseApp { app, task } => self.hands()?.use_app(app, task),
             Action::PressButton { app, role, name } => self.hands()?.press(app, role, name),
+            Action::ReadMail { from } => mail::read(from.as_deref(), self.timeout),
+            Action::DraftReply { from, text } => mail::reply(from.as_deref(), text, self.timeout),
             Action::GetTime => {
                 let mut cmd = Command::new("date");
                 cmd.arg("+%H:%M on %A %-d %B");

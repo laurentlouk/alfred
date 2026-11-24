@@ -56,8 +56,8 @@ expect = { name = "photo" }
 # --- on-screen work in other apps ---------------------------------------------------------------------
 [[case]]
 text = "reply to my last email saying I'll be late, and leave it as a draft"
-tool = "use_app"
-expect = { app = "mail" }
+tool = "reply_mail"
+expect = { text = "late" }
 
 [[case]]
 text = "in Slack, post hi in the general channel"

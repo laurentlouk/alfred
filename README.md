@@ -16,8 +16,9 @@ Summon it, say or type what you need, and it opens your apps, saves notes, adds 
 - **Summon it anywhere.** Press <kbd>⌃⌥Space</kbd> and the panel drops in at the top of the screen you're on. <kbd>esc</kbd> hides it.
 - **Talk or type.** Click the orb (or <kbd>⌘L</kbd>) and speak; Alfred stops listening when you do.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches Google, opens links, tells the time.
+- **It reads your mail and drafts replies.** "Read my last email", "reply to it saying I'll be there at 3": the reply opens in Mail for you to check and send. Alfred never sends mail.
 - **It runs your Shortcuts.** "Run Good Morning", or just "start the vacuum" when you have a shortcut for it.
-- **It can use other apps on screen.** With [agent-desktop](https://github.com/vercel-labs/agent-desktop) installed, "reply to my last email saying I'll be late, as a draft" works in Mail, and the same goes for Slack or WhatsApp.
+- **It can use other apps on screen.** With [agent-desktop](https://github.com/vercel-labs/agent-desktop) installed, Alfred can operate apps that have no shortcut, such as Slack or WhatsApp.
 - **It talks back.** Every answer is spoken with Kokoro, sentence by sentence, while the orb ripples with the voice.
 - **Everything stays on your Mac.** The language model runs in Ollama, speech and dictation run in-process. No account, no cloud.
 - **Safe by default.** No shell, no arbitrary scripts. Quitting an app, a shortcut Alfred picked for you, and any Send, Delete or Pay click wait for your yes.
@@ -29,7 +30,8 @@ open Notes and save pick up the dry cleaning
 search Google for the Rune UI framework
 remind me in 20 minutes to stretch
 open Safari and search for train times to Bath
-I want to send an email, get the mail app going
+read my last email
+reply to my last email from Ada saying see you Friday
 quit Music
 ```
 
@@ -61,7 +63,7 @@ cargo run --release -- setup
 scripts/bundle-macos.sh --install
 ```
 
-That puts `Alfred.app` in `~/Applications` and opens it. The first time Alfred saves a note or adds a reminder, macOS asks whether Alfred may control Notes or Reminders; the first time you talk, it asks for the microphone.
+That puts `Alfred.app` in `~/Applications` and opens it. The first time Alfred saves a note, adds a reminder or reads your mail, macOS asks whether Alfred may control Notes, Reminders or Mail; the first time you talk, it asks for the microphone.
 
 ## The command line
 
@@ -89,7 +91,7 @@ alfred ask "open Notes and save buy oat milk"
 ## How it works
 
 ```text
- you ──► Rune panel ──► router ──── recognized ───► action ──► Notes · Reminders · browser · apps
+ you ──► Rune panel ──► router ──── recognized ───► action ──► Notes · Reminders · Mail · browser · apps
   ▲        (orb, field)    │                          ▲
   │                        └─ not recognized ─► small model ─(schema-constrained decision)─┘
   │
@@ -103,18 +105,21 @@ alfred ask "open Notes and save buy oat milk"
 
 ### Measured
 
-`alfred eval --model` on the 40 requests in [`eval/utterances.toml`](eval/utterances.toml), with `qwen3:0.6b` on an M1 Max:
+`alfred eval --model` on the 46 requests in [`eval/utterances.toml`](eval/utterances.toml), with `qwen3:0.6b` on an M1 Max:
 
 | Path | Share of requests | Correct | Time |
 | --- | --- | --- | --- |
-| Router | 57% (23 of 40) | 100% | under 1 ms |
-| Model, structured decisions | 43% (17 of 40) | 82% | 0.1 to 0.3 s |
-| Model, native tool calls (for comparison) | 43% | 47% | 0.1 to 1.3 s |
-| **Overall** | | **92%** | |
+| Router | 59% (27 of 46) | 100% | under 1 ms |
+| Model, structured decisions | 41% (19 of 46) | 79% | 0.1 to 0.3 s |
+| **Overall** | | **91%** | |
 
-A bigger model follows looser requests better: set `model = "qwen3.5:0.8b"` or `"qwen3:4b"` in the config and run `ollama pull` for it.
+Native tool calls, measured on the earlier 40 requests for comparison, got 47% of the model's share right against 82% for structured decisions.
+
+A bigger model follows looser requests better. With `qwen3:4b` the same fixture scores 96%: it also gets the loose mail requests ("has anyone emailed me this morning?", "tell whoever wrote to me last that I got it") that `qwen3:0.6b` answers with chat. Set `model = "qwen3:4b"` in the config and run `ollama pull` for it.
 
 ## Reaching other apps
+
+**Mail.** "Read my last email", "who emailed me last", "anything new in my inbox?" and "lis mon dernier mail" read the newest email in your inbox: who sent it, when, the subject and how it begins. Name a sender ("the last email from Ada") to read theirs. "Reply to my last email saying …" (or "réponds au dernier mail de Marie en disant …") opens a reply in Mail with your words in it, brought forward for you to check and send. Without words, Alfred asks what to say. Alfred has no way to send mail: the script it runs contains no send command, and a test keeps it that way. What an email says is spoken to you but never kept in the conversation the model sees, so an email can't give Alfred orders.
 
 **Shortcuts.** Every shortcut in your Shortcuts app is available. Name one ("run Good Morning", "run the Lights Off shortcut") and it runs at once. Say it more loosely ("I'm cold in the living room") and the model picks the shortcut, then asks before running it, because shortcuts drive real devices. Names you trust can skip the question: list them in `[shortcuts] trusted`. `alfred shortcuts` shows them all.
 
@@ -130,7 +135,7 @@ Then allow Alfred in System Settings → Privacy & Security → Accessibility (o
 ollama pull qwen3:8b
 ```
 
-Tested live in Mail: `qwen3:4b` answers questions about what's on screen (who sent the latest email) but loses its place in multi-step tasks; `qwen3:8b` plans and follows menu commands (select a message, Reply). Mail's message body is a web view that can't be filled without physical keystrokes, which Alfred never sends, so Mail drafts are better served by Mail's own scripting.
+Tested live in Mail: `qwen3:4b` answers questions about what's on screen (who sent the latest email) but loses its place in multi-step tasks; `qwen3:8b` plans and follows menu commands (select a message, Reply). Mail's message body is a web view that can't be filled without physical keystrokes, which Alfred never sends, so Mail has its own tools (above).
 
 Measured with `alfred eval --model eval/apps.toml` (15 requests: named and loose shortcuts, on-screen tasks):
 

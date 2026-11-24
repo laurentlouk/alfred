@@ -16,7 +16,8 @@ use crate::tools::{action_from_call_in, decision_guide_for, decision_schema_for,
 
 /// Alfred's persona and rules, for the model.
 pub const SYSTEM_PROMPT: &str = "You are Alfred, a discreet, warm and efficient butler-style assistant living on the user's Mac. \
-You can act through tools: open or quit apps, save notes in Apple Notes, add reminders, search the web, open links and tell the time. \
+You can act through tools: open or quit apps, save notes in Apple Notes, add reminders, search the web, open links, tell the time, \
+read the newest email and open a reply to it as a draft. \
 When the user asks for something a tool can do, call that tool with complete plain-text arguments. \
 Otherwise answer in one or two short spoken sentences, with no markdown, lists or emoji. \
 Never claim to have done something you did not do with a tool, and never invent facts you cannot know.";
@@ -154,7 +155,7 @@ impl Agent {
         let text = text.trim();
         let turn = self.decide(text, exec, on);
         if !text.is_empty() {
-            self.history.push((text.to_string(), turn.reply.clone()));
+            self.history.push((text.to_string(), remembered(&turn)));
             let keep = self.history_turns.max(1);
             if self.history.len() > keep {
                 self.history.drain(..self.history.len() - keep);
@@ -312,17 +313,37 @@ impl Agent {
     }
 }
 
+/// What the conversation history keeps of a turn: its reply, with the text of an email or an app's window
+/// replaced by a plain phrase. That text was written by someone else; kept in the history, it would reach
+/// the model as part of the conversation, where "Alfred, run the shortcut …" in an email could steer it.
+fn remembered(turn: &Turn) -> String {
+    let mut reply = turn.reply.clone();
+    for d in &turn.done {
+        if let (true, Ok(summary)) = (d.action.reads_outside_text(), &d.result)
+            && !summary.trim().is_empty()
+        {
+            reply = reply.replace(summary.trim(), &d.action.done_phrase());
+        }
+    }
+    reply
+}
+
 /// Small models fill optional fields the user never gave (a reminder delay of "1 minute"). Keep a delay
 /// only when the request talks about minutes or hours.
 /// The same for shortcut input: models paraphrase the request into it ("Start vacuuming"), and a shortcut
 /// that takes input would act on that. Input is kept only when the user's words carry some, after a colon
 /// or in quotes ("run Translate: good morning").
+/// And for an email's sender: one the user didn't name is dropped, so a guessed name can't make Alfred
+/// read or answer the wrong email.
 fn trust_only_what_was_said(action: Action, said: &str) -> Action {
+    let named = |who: &str| !fold(who).is_empty() && fold(said).contains(&fold(who));
     match action {
         Action::CreateReminder { title, minutes: Some(_) } if !mentions_delay(said) => Action::CreateReminder { title, minutes: None },
         Action::RunShortcut { name, input: Some(_) } if !said.contains([':', '"', '“', '«']) => {
             Action::RunShortcut { name, input: None }
         }
+        Action::ReadMail { from: Some(who) } if !named(&who) => Action::ReadMail { from: None },
+        Action::DraftReply { from: Some(who), text } if !named(&who) => Action::DraftReply { from: None, text },
         other => other,
     }
 }

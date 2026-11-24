@@ -213,3 +213,70 @@ fn start_only_opens_apps_alfred_knows() {
     assert_eq!(route("start a timer for five minutes"), None);
     assert_eq!(act("open the vacuum app"), app("Vacuum"), "open names an app whatever it is");
 }
+
+fn read_mail(from: Option<&str>) -> Action {
+    Action::ReadMail { from: from.map(String::from) }
+}
+
+fn draft(from: Option<&str>, text: &str) -> Action {
+    Action::DraftReply { from: from.map(String::from), text: text.into() }
+}
+
+#[test]
+fn reads_the_newest_email() {
+    assert_eq!(act("read my last email"), read_mail(None));
+    assert_eq!(act("Alfred, can you read me my latest e-mail?"), read_mail(None));
+    assert_eq!(act("what's my most recent email about"), read_mail(None));
+    assert_eq!(act("what does my last mail say"), read_mail(None));
+    assert_eq!(act("who sent my last email"), read_mail(None));
+    assert_eq!(act("who emailed me last"), read_mail(None));
+    assert_eq!(act("check my newest email"), read_mail(None));
+    assert_eq!(act("read the last email from Ada"), read_mail(Some("Ada")));
+    assert_eq!(act("lis mon dernier mail"), read_mail(None));
+    assert_eq!(act("lis-moi le dernier e-mail de Marie"), read_mail(Some("Marie")));
+    assert_eq!(act("qui m'a écrit en dernier"), read_mail(None));
+    assert_eq!(act("anything new in my inbox?"), read_mail(None));
+    assert_eq!(act("Do I have any new emails?"), read_mail(None));
+    assert_eq!(act("check my email"), read_mail(None));
+    assert_eq!(act("est-ce que j'ai des nouveaux mails ?"), read_mail(None));
+}
+
+#[test]
+fn drafts_a_reply_with_the_users_words() {
+    assert_eq!(act("reply to my last email saying I'll be there at 3"), draft(None, "I'll be there at 3"));
+    assert_eq!(act("reply to my last email saying I'll be late, and leave it as a draft"), draft(None, "I'll be late"));
+    assert_eq!(act("draft a reply to the latest email: thanks, see you Friday"), draft(None, "Thanks, see you Friday"));
+    assert_eq!(act("answer my newest mail and say yes please count me in"), draft(None, "Yes please count me in"));
+    assert_eq!(act("reply in draft to the last email from Ada with thanks"), draft(Some("Ada"), "Thanks"));
+    assert_eq!(act("réponds au dernier mail de Marie en disant merci, à demain"), draft(Some("Marie"), "Merci, à demain"));
+    assert_eq!(act("réponds à mon dernier mail en brouillon : c'est noté"), draft(None, "C'est noté"));
+    assert_eq!(act("read my last email and reply saying on my way"), draft(None, "On my way"));
+}
+
+#[test]
+fn a_reply_without_words_asks_for_them() {
+    match route("reply to my last email") {
+        Some(Route::Ask { slot: Slot::ReplyText { from: None }, first: None, .. }) => {}
+        other => panic!("{other:?}"),
+    }
+    match route("read my last email from Ada and reply to it") {
+        Some(Route::Ask { slot, first, question }) => {
+            assert_eq!(first, Some(read_mail(Some("Ada"))), "read it aloud first");
+            assert_eq!(question, "What shall I say in the reply?");
+            assert_eq!(slot.fill("see you soon"), Some(draft(Some("Ada"), "See you soon")));
+            assert_eq!(slot.fill("never mind"), None);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn other_emails_and_other_things_go_to_the_model() {
+    assert_eq!(route("read the email about the invoice"), None, "not the newest: the model decides");
+    assert_eq!(route("reply to Marie on WhatsApp saying hi"), None);
+    assert_eq!(route("answer the phone"), None);
+    assert_eq!(route("read my last two emails"), None);
+    assert_eq!(route("réponds au dernier mail que j'ai reçu"), None, "\"que\" is not taken as the reply's text");
+    assert_eq!(route("read my last note"), None);
+    assert!(matches!(route("remind me to answer my last email"), Some(Route::Act(Action::CreateReminder { .. }))));
+}
