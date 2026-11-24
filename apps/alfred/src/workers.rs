@@ -43,6 +43,19 @@ pub fn spawn(config: Config, me: AppHandle<Ui>) -> Links {
     let (voice_tx, voice_rx) = mpsc::channel::<VoiceJob>();
     let playback = Playback::new();
 
+    // Like any Mac app that works in other apps: when on-screen control is set up but Accessibility isn't
+    // allowed, macOS shows its own request at launch ("Alfred would like to control this computer…").
+    if config.desktop.enabled && alfred_mac::find_program(&config.desktop.command).is_some() {
+        std::thread::Builder::new()
+            .name("alfred-accessibility".into())
+            .spawn(|| {
+                if alfred_mac::permissions::accessibility_allowed() == Some(false) {
+                    alfred_mac::permissions::ask_for_accessibility(false);
+                }
+            })
+            .ok();
+    }
+
     let cfg = config.clone();
     let ui = me.clone();
     std::thread::Builder::new()

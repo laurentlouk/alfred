@@ -244,6 +244,11 @@ pub trait Hands: Send + Sync {
     fn use_app(&self, app: &str, task: &str) -> Result<Outcome, String>;
     /// Find the control by role and name in `app` and click it.
     fn press(&self, app: &str, role: &str, name: &str) -> Result<Outcome, String>;
+    /// Whether the on-screen engine is allowed to work (macOS's Accessibility permission); `None` when it
+    /// can't tell.
+    fn allowed(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Operating web pages. `alfred-hands` implements it with `agent-browser`; the executor delegates

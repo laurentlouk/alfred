@@ -68,6 +68,14 @@ home devices, Slack. Two complementary bridges do that:
 10. **Permissions.** agent-desktop needs Accessibility, granted to the app that launches it (Alfred.app, or
     the terminal for the CLI). `alfred doctor` reports it; a missing grant returns the exact System Settings
     path instead of failing silently.
+    *Asking, added 2026-11-24 at the owner's request ("it should open the system panel like other apps"):*
+    when agent-desktop reports Accessibility missing, at launch and before an on-screen action, Alfred
+    calls `AXIsProcessTrustedWithOptions` with the prompt option (through `osascript -l JavaScript`, which
+    macOS attributes to Alfred, since the workspace forbids `unsafe`), which shows macOS's own request and
+    puts Alfred in the list, and opens System Settings at Privacy & Security → Accessibility. Nothing is
+    switched on for the user. `scripts/bundle-macos.sh` signs with the Mac's Apple Development identity
+    (or `ALFRED_SIGN`): an ad hoc signature changes with every build, and macOS forgot the grant at each
+    reinstall, which is what the owner ran into.
 11. **Pending actions come from executors too.** `Outcome` gains an optional follow-up action. The agent
     turns it into the pending confirmation exactly like a risky router action, so the UI's Yes/No card and
     the CLI's prompt need no new code path.
@@ -126,8 +134,8 @@ a full on-screen run waits for the owner to grant Accessibility.
 
 - **No `shortcuts` command or none defined:** the tool isn't offered; the router doesn't match.
 - **Shortcut asks a question mid-run** (Ask for Input): it waits until the 120 s timeout, which is reported.
-- **agent-desktop missing or Accessibility denied:** `use_app` answers with the install command or the
-  System Settings path.
+- **agent-desktop missing or Accessibility denied:** `use_app` answers with the install command, or asks
+  for Accessibility and opens System Settings at the list.
 - **The app isn't running:** `launch` first, then snapshot.
 - **`STALE_REF` or `AMBIGUOUS_TARGET`:** take a new snapshot and let the model decide again (counts as a
   step).

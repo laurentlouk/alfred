@@ -66,7 +66,9 @@ cargo run --release -- setup
 scripts/bundle-macos.sh --install
 ```
 
-That puts `Alfred.app` in `~/Applications` and opens it. The first time Alfred saves a note, adds a reminder or reads your mail, macOS asks whether Alfred may control Notes, Reminders or Mail; the first time you talk, it asks for the microphone.
+That puts `Alfred.app` in `~/Applications` (quitting a running Alfred first) and opens it. The first time Alfred saves a note, adds a reminder or reads your mail, macOS asks whether Alfred may control Notes, Reminders or Mail; the first time you talk, it asks for the microphone. With agent-desktop installed, Alfred asks for Accessibility at launch, the way other Mac apps do, and opens System Settings at Privacy & Security → Accessibility so turning it on is one click.
+
+macOS remembers these permissions by the app's signature. The script signs with your "Apple Development" certificate when you have one (or the identity in `ALFRED_SIGN`), so permissions survive rebuilds; an ad hoc signature changes with every build, and macOS then asks again.
 
 ## The command line
 
@@ -167,7 +169,7 @@ Ollama's Apple-silicon builds of Gemma can't do structured output; Alfred notice
 brew install agent-desktop
 ```
 
-Then allow Alfred in System Settings → Privacy & Security → Accessibility (or your terminal, for the command line). Alfred looks at the app's window, picks one step, acts, and looks again, at most 8 steps. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:8b` by default):
+Alfred then asks for Accessibility and opens System Settings at Privacy & Security → Accessibility: turn on Alfred (or your terminal, for the command line). Alfred looks at the app's window, picks one step, acts, and looks again, at most 8 steps. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:8b` by default):
 
 ```bash
 ollama pull qwen3:8b

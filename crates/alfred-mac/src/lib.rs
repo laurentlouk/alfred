@@ -6,6 +6,7 @@
 
 pub mod focus;
 pub mod mail;
+pub mod permissions;
 pub mod shortcuts;
 
 use std::io::Read;
@@ -36,6 +37,10 @@ pub struct MacExecutor {
     /// The browser engine for `use_browser`, its held clicks, and answering searches, when `agent-browser`
     /// is set up.
     pub web: Option<Arc<dyn WebHands>>,
+    /// Check the Accessibility permission before on-screen actions, and ask for it when it's missing.
+    pub check_accessibility: bool,
+    /// macOS's own permission dialog was shown already: the next time, System Settings opens instead.
+    asked_accessibility: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for MacExecutor {
@@ -48,6 +53,8 @@ impl Default for MacExecutor {
             shortcut_timeout: Duration::from_secs(120),
             hands: None,
             web: None,
+            check_accessibility: false,
+            asked_accessibility: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -57,6 +64,7 @@ impl MacExecutor {
         Self {
             search_engine: c.search.engine.clone(),
             browser: Some(c.search.browser.trim().to_string()).filter(|b| !b.is_empty()),
+            check_accessibility: true,
             ..Self::default()
         }
     }
@@ -78,9 +86,17 @@ impl MacExecutor {
     }
 
     fn hands(&self) -> Result<&Arc<dyn Hands>, String> {
-        self.hands.as_ref().ok_or_else(|| {
+        let hands = self.hands.as_ref().ok_or_else(|| {
             "Operating apps on screen needs agent-desktop: `brew install agent-desktop`, then allow Alfred in System Settings → Privacy & Security → Accessibility.".to_string()
-        })
+        })?;
+        // Without Accessibility every on-screen step fails: ask for it, the way any Mac app does. The engine's
+        // own view comes first (it is what fails), macOS's answer to Alfred when it can't tell.
+        if self.check_accessibility && hands.allowed().or_else(permissions::accessibility_allowed) == Some(false) {
+            let asked_before = self.asked_accessibility.swap(true, std::sync::atomic::Ordering::SeqCst);
+            permissions::ask_for_accessibility(asked_before);
+            return Err(if asked_before { permissions::STILL_MISSING } else { permissions::ASKED }.to_string());
+        }
+        Ok(hands)
     }
 
     fn open_in_browser(&self, url: &str, browser: Option<&str>) -> Result<(), String> {

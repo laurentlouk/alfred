@@ -198,18 +198,23 @@ impl DesktopHands {
 
     /// Accessibility must be granted to the app that launched us; say exactly how when it isn't.
     fn check_permission(&self) -> Result<(), String> {
+        match self.accessibility()? {
+            true => Ok(()),
+            false => Err("I'm not allowed to use apps on screen yet. In System Settings → Privacy & Security → Accessibility, switch on Alfred (or the terminal you run it from), then ask again.".into()),
+        }
+    }
+
+    /// agent-desktop's own view of the Accessibility permission, remembered once granted.
+    fn accessibility(&self) -> Result<bool, String> {
         if self.permission_ok.lock().map(|g| *g).unwrap_or(false) {
-            return Ok(());
+            return Ok(true);
         }
         let status = self.call(args(["status"]), None).map_err(|e| format!("agent-desktop isn't working: {e}"))?;
-        let state = status["permissions"]["accessibility"]["state"].as_str().unwrap_or("unknown");
-        if state != "granted" {
-            return Err("I'm not allowed to use apps on screen yet. In System Settings → Privacy & Security → Accessibility, switch on Alfred (or the terminal you run it from), then ask again.".into());
-        }
-        if let Ok(mut g) = self.permission_ok.lock() {
+        let granted = status["permissions"]["accessibility"]["state"].as_str() == Some("granted");
+        if granted && let Ok(mut g) = self.permission_ok.lock() {
             *g = true;
         }
-        Ok(())
+        Ok(granted)
     }
 
     /// The app's window and its menu bar, launching the app (or asking it for a window) when needed.
@@ -307,6 +312,10 @@ impl DesktopHands {
 }
 
 impl Hands for DesktopHands {
+    fn allowed(&self) -> Option<bool> {
+        self.accessibility().ok()
+    }
+
     fn use_app(&self, app: &str, task: &str) -> Result<Outcome, String> {
         self.check_permission()?;
         let mut history: Vec<String> = Vec::new();
