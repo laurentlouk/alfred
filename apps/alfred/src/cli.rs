@@ -264,6 +264,18 @@ fn doctor() -> Result<(), String> {
         }
         None => println!("· on-screen actions are off: `brew install agent-desktop` turns them on"),
     }
+    match alfred_mac::find_program(&cfg.browser.command) {
+        Some(program) if cfg.browser.enabled => line(
+            true,
+            format!(
+                "agent-browser at {} (website tasks and spoken search answers; profile {})",
+                program.display(),
+                cfg.browser.profile_dir().display()
+            ),
+        ),
+        Some(_) => println!("· website tasks are off in the config ([browser] enabled = false)"),
+        None => println!("· website tasks are off and searches only open the results: `brew install agent-browser` turns them on"),
+    }
     let mic = rune::Recorder::permission();
     println!("· microphone permission: {mic:?} (asked the first time you talk to Alfred)");
     println!("· Notes and Reminders ask for Automation permission the first time Alfred uses them");

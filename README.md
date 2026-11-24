@@ -146,6 +146,14 @@ Measured with `alfred eval --model eval/apps.toml` (15 requests: named and loose
 
 Named shortcuts go through the router and work with any model. For loose requests to your apps, set `[llm] model = "qwen3:4b"`.
 
+**On the web.** With [agent-browser](https://github.com/vercel-labs/agent-browser) installed, Alfred has its own Chrome window, with its own profile (`~/Library/Application Support/Alfred/browser`, never your Chrome profiles):
+
+```bash
+brew install agent-browser
+```
+
+A question that needs the web ("what's the weather in Paris", "who won the last Champions League final") opens the search results in that window, and Alfred reads them and answers in a sentence, saying where the answer came from. A task that takes a few steps on a site ("on amazon.fr, find the price of the Kindle Paperwhite", "compare the AirPods Pro on apple.com and fnac.com") runs the same look-decide-act loop as on screen, at most 10 steps, with the model from `[desktop] model`. Alfred only opens an address you said; it follows links on the page, goes back or searches, but never opens an address it read on a page. It never types passwords, card numbers or sign-in codes, and a Place order, Book, Subscribe or Sign up click comes back to you as a Yes/No question. Cookie walls are declined ("Reject all"); a robot check is left for you to answer in the window. The window stays open on the last page so you can see it and take over.
+
 ## Configuration
 
 `~/Library/Application Support/Alfred/config.toml` (`ALFRED_HOME` moves the folder). Every field has a default:
@@ -176,8 +184,15 @@ trusted = []                 # shortcut names that run without asking when Alfre
 
 [desktop]
 enabled = true               # on-screen actions, when agent-desktop is installed
-model = "qwen3:8b"           # the model that reads app windows
+model = "qwen3:8b"           # the model that reads app windows and web pages
 max_steps = 8
+
+[browser]
+enabled = true               # website tasks and spoken search answers, when agent-browser is installed
+command = "agent-browser"
+profile = "~/Library/Application Support/Alfred/browser"   # Alfred's own Chrome profile
+headed = true                # show the window, so you can watch and step in
+max_steps = 10
 ```
 
 ## Develop
@@ -201,7 +216,7 @@ Scenes: `idle`, `listening`, `thinking`, `speaking`, `conversation`, `confirm`.
 | [`crates/alfred-core`](crates/alfred-core) | Router, tools and argument repair, the agent loop, the LLM clients, config, eval. No UI, no native code |
 | [`crates/alfred-mac`](crates/alfred-mac) | The macOS executor: apps, Notes, Reminders, browser |
 | [`crates/alfred-voice`](crates/alfred-voice) | Kokoro speech and Moonshine dictation, model downloads |
-| [`crates/alfred-hands`](crates/alfred-hands) | Operating apps on screen with agent-desktop: the observe-decide-act loop and its guard |
+| [`crates/alfred-hands`](crates/alfred-hands) | Operating apps on screen with agent-desktop and web pages with agent-browser: the observe-decide-act loops and their guards |
 | [`apps/alfred`](apps/alfred) | The Rune app and the `alfred` command line |
 
 Design notes live in [`docs/specs`](docs/specs).
@@ -214,6 +229,7 @@ Design notes live in [`docs/specs`](docs/specs).
 - [Moonshine](https://github.com/moonshine-ai/moonshine) tiny for dictation (MIT)
 - [Ollama](https://ollama.com) and [Qwen3](https://huggingface.co/Qwen) (Apache-2.0)
 - [agent-desktop](https://github.com/vercel-labs/agent-desktop) for on-screen actions, optional (Apache-2.0)
+- [agent-browser](https://github.com/vercel-labs/agent-browser) for web pages, optional (Apache-2.0)
 
 No GPL code is linked: Kokoro's phonemes come from misaki-rs rather than espeak-ng.
 

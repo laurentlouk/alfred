@@ -13,6 +13,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use alfred_core::action::{BROWSER_APP, WebHands};
 use alfred_core::normalize::search_url;
 use alfred_core::{Action, Executor, Hands, Outcome};
 
@@ -31,6 +32,9 @@ pub struct MacExecutor {
     pub shortcut_timeout: Duration,
     /// The on-screen engine for `use_app` and `press_button`, when `agent-desktop` is set up.
     pub hands: Option<Arc<dyn Hands>>,
+    /// The browser engine for `use_browser`, its held clicks, and answering searches, when `agent-browser`
+    /// is set up.
+    pub web: Option<Arc<dyn WebHands>>,
 }
 
 impl Default for MacExecutor {
@@ -42,6 +46,7 @@ impl Default for MacExecutor {
             show_notes: true,
             shortcut_timeout: Duration::from_secs(120),
             hands: None,
+            web: None,
         }
     }
 }
@@ -58,6 +63,17 @@ impl MacExecutor {
     pub fn with_hands(mut self, hands: Arc<dyn Hands>) -> Self {
         self.hands = Some(hands);
         self
+    }
+
+    pub fn with_web_hands(mut self, web: Arc<dyn WebHands>) -> Self {
+        self.web = Some(web);
+        self
+    }
+
+    fn web(&self) -> Result<&Arc<dyn WebHands>, String> {
+        self.web.as_ref().ok_or_else(|| {
+            "Doing things on websites needs agent-browser: `brew install agent-browser` (it uses Google Chrome).".to_string()
+        })
     }
 
     fn hands(&self) -> Result<&Arc<dyn Hands>, String> {
@@ -133,6 +149,15 @@ impl Executor for MacExecutor {
                 Ok(Outcome::new(action.done_phrase()))
             }
             Action::WebSearch { query, browser } => {
+                // Alfred's own browser reads the results and answers, unless the request named a browser. When
+                // it can't read them (a robot check with its window hidden, a broken install), the results open
+                // as before.
+                if browser.is_none()
+                    && let Some(web) = &self.web
+                    && let Ok(answer) = web.answer(query)
+                {
+                    return Ok(answer);
+                }
                 self.open_in_browser(&search_url(&self.search_engine, query), browser.as_deref())?;
                 Ok(Outcome::new(action.done_phrase()))
             }
@@ -150,7 +175,9 @@ impl Executor for MacExecutor {
                 Ok(Outcome::new(if said.is_empty() { action.done_phrase() } else { clip(said, 400) }))
             }
             Action::UseApp { app, task } => self.hands()?.use_app(app, task),
+            Action::PressButton { app, role, name } if app == BROWSER_APP => self.web()?.press(role, name),
             Action::PressButton { app, role, name } => self.hands()?.press(app, role, name),
+            Action::UseBrowser { task, url } => self.web()?.browse(task, url.as_deref()),
             Action::ReadMail { from } => mail::read(from.as_deref(), self.timeout),
             Action::DraftReply { from, text } => mail::reply(from.as_deref(), text, self.timeout),
             Action::GetTime => {
@@ -342,6 +369,81 @@ mod tests {
     fn on_screen_actions_explain_how_to_set_them_up() {
         let e = MacExecutor::default().execute(&Action::UseApp { app: "Mail".into(), task: "x".into() }).unwrap_err();
         assert!(e.contains("brew install agent-desktop") && e.contains("Accessibility"), "{e}");
+    }
+
+    /// Browser hands that record what they were asked and answer from a script.
+    #[derive(Default)]
+    struct FakeWeb {
+        asked: std::sync::Mutex<Vec<String>>,
+        answer: Option<String>,
+    }
+
+    impl WebHands for FakeWeb {
+        fn browse(&self, task: &str, url: Option<&str>) -> Result<Outcome, String> {
+            self.asked.lock().unwrap().push(format!("browse {task} {url:?}"));
+            Ok(Outcome::new("browsed"))
+        }
+
+        fn press(&self, role: &str, name: &str) -> Result<Outcome, String> {
+            self.asked.lock().unwrap().push(format!("press {role} {name}"));
+            Ok(Outcome::new("pressed"))
+        }
+
+        fn answer(&self, query: &str) -> Result<Outcome, String> {
+            self.asked.lock().unwrap().push(format!("answer {query}"));
+            self.answer.clone().map(Outcome::new).ok_or_else(|| "robot check".to_string())
+        }
+    }
+
+    /// An executor whose own browser can't be found, so a fallback to it fails instead of opening a window.
+    fn with_web(web: Arc<FakeWeb>) -> MacExecutor {
+        MacExecutor { browser: Some("Definitely Not A Browser 7f3a".into()), ..MacExecutor::default() }.with_web_hands(web)
+    }
+
+    #[test]
+    fn browser_tasks_and_their_held_clicks_go_to_the_browser_hands() {
+        let web = Arc::new(FakeWeb::default());
+        let exec = with_web(web.clone());
+        let task = Action::UseBrowser { task: "find the price".into(), url: Some("https://example.com".into()) };
+        assert_eq!(exec.execute(&task).unwrap().summary, "browsed");
+        let press = Action::PressButton { app: BROWSER_APP.into(), role: "button".into(), name: "Place order".into() };
+        assert_eq!(exec.execute(&press).unwrap().summary, "pressed");
+        assert_eq!(*web.asked.lock().unwrap(), ["browse find the price Some(\"https://example.com\")", "press button Place order"]);
+        let e = exec.execute(&Action::PressButton { app: "Mail".into(), role: "button".into(), name: "Send".into() }).unwrap_err();
+        assert!(e.contains("agent-desktop"), "a held click in an app still goes to the app hands: {e}");
+    }
+
+    #[test]
+    fn without_agent_browser_browser_tasks_say_how_to_install_it() {
+        let e = MacExecutor::default().execute(&Action::UseBrowser { task: "x".into(), url: None }).unwrap_err();
+        assert!(e.contains("brew install agent-browser"), "{e}");
+    }
+
+    #[test]
+    fn searches_are_answered_by_the_browser_hands() {
+        let web =
+            Arc::new(FakeWeb { answer: Some("It's 12°C in Paris, according to Google's weather card.".into()), ..FakeWeb::default() });
+        let o = with_web(web.clone()).execute(&Action::WebSearch { query: "weather in Paris".into(), browser: None }).unwrap();
+        assert_eq!(o.summary, "It's 12°C in Paris, according to Google's weather card.");
+        assert_eq!(*web.asked.lock().unwrap(), ["answer weather in Paris"]);
+    }
+
+    #[test]
+    fn a_search_falls_back_to_opening_the_results_when_they_cant_be_read() {
+        // The fallback opens the results in the configured browser, which doesn't exist here: the error
+        // shows the old path ran.
+        let web = Arc::new(FakeWeb::default());
+        let e = with_web(web.clone()).execute(&Action::WebSearch { query: "weather in Paris".into(), browser: None }).unwrap_err();
+        assert!(e.contains("Definitely Not A Browser 7f3a") || e.contains("Unable to find"), "{e}");
+        assert_eq!(*web.asked.lock().unwrap(), ["answer weather in Paris"]);
+        // A browser the user named is used as before, without the hands.
+        let web = Arc::new(FakeWeb { answer: Some("x".into()), ..FakeWeb::default() });
+        let named = Action::WebSearch { query: "rune".into(), browser: Some("Definitely Not A Browser 7f3a".into()) };
+        assert!(with_web(web.clone()).execute(&named).is_err());
+        assert!(web.asked.lock().unwrap().is_empty());
+        // No hands at all: today's behaviour, the results open in the browser.
+        let plain = MacExecutor { browser: Some("Definitely Not A Browser 7f3a".into()), ..MacExecutor::default() };
+        assert!(plain.execute(&Action::WebSearch { query: "rune".into(), browser: None }).is_err());
     }
 
     #[test]

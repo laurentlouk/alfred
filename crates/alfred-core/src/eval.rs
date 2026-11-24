@@ -31,8 +31,8 @@ pub struct Case {
 struct Fixture {
     #[serde(rename = "case")]
     cases: Vec<Case>,
-    /// The capabilities the cases assume (shortcut names, on-screen hands), so a fixture is the same on
-    /// every machine.
+    /// The capabilities the cases assume (shortcut names, on-screen hands, the browser), so a fixture is
+    /// the same on every machine.
     #[serde(default)]
     catalog: Option<CatalogSpec>,
 }
@@ -43,6 +43,8 @@ struct CatalogSpec {
     shortcuts: Vec<String>,
     #[serde(default)]
     hands: bool,
+    #[serde(default)]
+    browser: bool,
 }
 
 pub fn load(path: &Path) -> Result<Vec<Case>, String> {
@@ -58,7 +60,7 @@ pub fn parse(text: &str) -> Result<Vec<Case>, String> {
 /// Cases and the catalog they assume (empty when the fixture has no `[catalog]`).
 pub fn parse_with_catalog(text: &str) -> Result<(Vec<Case>, Catalog), String> {
     let f = toml::from_str::<Fixture>(text).map_err(|e| e.to_string())?;
-    let catalog = f.catalog.map(|c| Catalog { shortcuts: c.shortcuts, hands: c.hands }).unwrap_or_default();
+    let catalog = f.catalog.map(|c| Catalog { shortcuts: c.shortcuts, hands: c.hands, browser: c.browser }).unwrap_or_default();
     Ok((f.cases, catalog))
 }
 

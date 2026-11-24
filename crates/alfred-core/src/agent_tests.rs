@@ -224,8 +224,11 @@ fn yes_and_no_words() {
 }
 
 fn with_shortcuts(replies: Vec<Result<crate::llm::ModelReply, LlmError>>) -> Agent {
-    agent_with(replies)
-        .with_catalog(crate::catalog::Catalog { shortcuts: vec!["démarre la musique".into(), "Bonjour".into()], hands: true })
+    agent_with(replies).with_catalog(crate::catalog::Catalog {
+        shortcuts: vec!["démarre la musique".into(), "Bonjour".into()],
+        hands: true,
+        browser: false,
+    })
 }
 
 #[test]

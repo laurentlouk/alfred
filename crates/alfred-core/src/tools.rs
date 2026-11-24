@@ -8,7 +8,7 @@
 
 use serde_json::{Value, json};
 
-use crate::action::Action;
+use crate::action::{Action, host_of};
 use crate::catalog::Catalog;
 use crate::normalize::{app_name, browser_name, capitalize, site_url, title_from, url};
 
@@ -60,8 +60,8 @@ pub const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "web_search",
-        description: "Search the web with Google in the browser and show the results.",
-        params: &[p("query", "string", "What to search for.", true)],
+        description: "Search the web and show the results, or answer a question that needs current or online information (weather, news, prices, scores, opening hours, who won, how far, the time in another city) from them.",
+        params: &[p("query", "string", "What to search for: the question, in a few words.", true)],
     },
     ToolSpec {
         name: "open_url",
@@ -89,8 +89,8 @@ pub fn tools_json() -> Value {
     tools_json_for(&Catalog::default())
 }
 
-/// The tools for this Mac: the built-in ones, plus `run_shortcut` (its names as an enum) and `use_app`
-/// when the catalog offers them.
+/// The tools for this Mac: the built-in ones, plus `run_shortcut` (its names as an enum), `use_app` and
+/// `use_browser` when the catalog offers them.
 pub fn tools_json_for(catalog: &Catalog) -> Value {
     let mut tools = base_tools_json();
     if let Value::Array(list) = &mut tools {
@@ -120,9 +120,24 @@ pub fn tools_json_for(catalog: &Catalog) -> Value {
                 }
             }));
         }
+        if catalog.browser {
+            list.push(json!({
+                "type": "function",
+                "function": {
+                    "name": "use_browser",
+                    "description": BROWSER_DESCRIPTION,
+                    "parameters": { "type": "object", "properties": {
+                        "text": { "type": "string", "description": "The task, in one sentence." },
+                        "url": { "type": "string", "description": "Only if the user gave a site's address: where to start." },
+                    }, "required": ["text"] },
+                }
+            }));
+        }
     }
     tools
 }
+
+const BROWSER_DESCRIPTION: &str = "Do a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices. A plain search is web_search, and opening a site is open_url.";
 
 fn base_tools_json() -> Value {
     Value::Array(
@@ -152,8 +167,8 @@ pub fn decision_schema() -> Value {
     decision_schema_for(&Catalog::default())
 }
 
-/// The decision schema for this Mac: `run_shortcut` (with a `shortcut` field limited to the real names)
-/// and `use_app` join the actions when the catalog offers them.
+/// The decision schema for this Mac: `run_shortcut` (with a `shortcut` field limited to the real names),
+/// `use_app` and `use_browser` join the actions when the catalog offers them.
 pub fn decision_schema_for(catalog: &Catalog) -> Value {
     let mut actions: Vec<&str> = TOOLS.iter().map(|t| t.name).collect();
     if !catalog.shortcuts.is_empty() {
@@ -161,6 +176,9 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
     }
     if catalog.hands {
         actions.push("use_app");
+    }
+    if catalog.browser {
+        actions.push("use_browser");
     }
     actions.push("chat");
     let mut schema = json!({
@@ -196,6 +214,9 @@ pub fn decision_guide_for(catalog: &Catalog) -> String {
     if catalog.hands {
         guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as changing a setting (field app: the app; field text: the task in one sentence).");
     }
+    if catalog.browser {
+        guide.push_str("\nuse_browser: a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices (field text: the task in one sentence; field url only if the user gave the site's address). A plain search stays web_search, and opening a site stays open_url.");
+    }
     guide
 }
 
@@ -205,11 +226,11 @@ open_app: open an application (field app, such as Music, Calendar, Mail or Termi
 quit_app: quit an application (field app).
 create_note: save a note in Apple Notes (field text: the note's content).
 create_reminder: add a reminder (field text: what to do; field minutes only if the user gave a delay).
-web_search: search the web (field query).
+web_search: search the web, or answer a question that needs current or online information, such as the weather, news, prices, scores, opening hours, who won, how far, or the time in another city (field query: the question in a few words).
 open_url: open a website (field url).
 read_mail: the user asks about their email or inbox (field from only if they name a sender).
 reply_mail: answer the newest email (field text: what the reply says; field from only if they name a sender).
-get_time: the user asks the time, the date or the day.
+get_time: the user asks the local time, the date or the day (the time in another city is web_search).
 chat: anything else; answer in one or two short sentences in field reply, and set hard to true when a good answer needs reasoning (a calculation, logic, a plan, a comparison, or explaining how or why).";
 
 /// A structured decision as a tool call, or `None` for "chat".
@@ -357,6 +378,13 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
                 .ok_or("use_app needs the task in \"text\".")?;
             Ok(Action::UseApp { app, task })
         }
+        "use_browser" | "browser" | "use_web" | "web_task" | "browse_site" if catalog.browser => {
+            let task = string_arg(&args, &["text", "task", "goal", "instruction", "query"])
+                .or_else(|| (!utterance.trim().is_empty()).then(|| utterance.trim().to_string()))
+                .ok_or("use_browser needs the task in \"text\".")?;
+            let url = string_arg(&args, &["url", "link", "website", "site", "address", "page"]).and_then(|raw| said_url(&raw, utterance));
+            Ok(Action::UseBrowser { task, url })
+        }
         other => Err(format!(
             "There is no tool called \"{other}\". The tools are: {}.",
             TOOLS.iter().map(|t| t.name).collect::<Vec<_>>().join(", ")
@@ -364,9 +392,49 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
     }
 }
 
+/// A starting address for the browser, kept only when it comes from the user's words: an http(s) address
+/// whose host they said ("on amazon.fr …"), or one on a site they named ("on Wikipedia …" keeps
+/// `en.wikipedia.org`). A model guessing an address, or repeating one it read somewhere, gets nothing:
+/// the run starts from the page already open instead.
+fn said_url(raw: &str, said: &str) -> Option<String> {
+    let u = url(raw).or_else(|| site_url(raw))?;
+    let host = host_of(&u).to_lowercase();
+    if says_host(&said.to_lowercase(), &host) {
+        return Some(u);
+    }
+    // Sites said by name: every one- and two-word run of the request that names a known site.
+    let words: Vec<String> = crate::catalog::fold(said).split(' ').map(str::to_string).collect();
+    let named =
+        (0..words.len()).flat_map(|i| [words[i].clone(), words[i..(i + 2).min(words.len())].join(" ")]).filter_map(|w| site_url(&w));
+    for site in named {
+        let site_host = host_of(&site).to_lowercase();
+        if host == site_host || host.ends_with(&format!(".{site_host}")) {
+            return Some(u);
+        }
+    }
+    None
+}
+
+/// `said` contains `host` as a whole address: "x.com" is in "go to x.com/home" but not in "fix.com".
+fn says_host(said: &str, host: &str) -> bool {
+    let part = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '-');
+    !host.is_empty()
+        && said.match_indices(host).any(|(i, _)| !part(said[..i].chars().next_back()) && !part(said[i + host.len()..].chars().next()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn questions_about_the_world_now_go_to_web_search() {
+        for words in ["weather", "news", "prices", "scores", "opening hours", "who won", "how far", "the time in another city"] {
+            assert!(DECISION_GUIDE.contains(words), "{words}");
+        }
+        let search = TOOLS.iter().find(|t| t.name == "web_search").unwrap();
+        assert!(search.description.contains("weather") && search.description.contains("who won"));
+        assert!(DECISION_GUIDE.contains("the time in another city is web_search"));
+    }
 
     #[test]
     fn schema_lists_every_tool_with_required_fields() {
@@ -457,7 +525,79 @@ mod tests {
     }
 
     fn catalog() -> Catalog {
-        Catalog { shortcuts: vec!["Focus Timer".into(), "démarre la musique".into()], hands: true }
+        Catalog { shortcuts: vec!["Focus Timer".into(), "démarre la musique".into()], hands: true, browser: true }
+    }
+
+    fn browse(args: Value, said: &str) -> Result<Action, String> {
+        action_from_call_in("use_browser", &args, said, &catalog())
+    }
+
+    #[test]
+    fn the_browser_tool_is_offered_only_when_agent_browser_is_there() {
+        let names = |c: &Catalog| -> Vec<String> {
+            tools_json_for(c).as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect()
+        };
+        assert!(names(&catalog()).contains(&"use_browser".to_string()));
+        assert!(!names(&Catalog { browser: false, ..catalog() }).contains(&"use_browser".to_string()));
+        let tool = tools_json_for(&catalog()).as_array().unwrap().iter().find(|t| t["function"]["name"] == "use_browser").cloned().unwrap();
+        assert_eq!(tool["function"]["parameters"]["required"], json!(["text"]));
+        assert!(decision_schema_for(&catalog())["properties"]["action"]["enum"].as_array().unwrap().contains(&json!("use_browser")));
+        assert!(!decision_schema()["properties"]["action"]["enum"].as_array().unwrap().contains(&json!("use_browser")));
+        let guide = decision_guide_for(&catalog());
+        assert!(guide.contains("use_browser:") && guide.contains("comparing prices") && guide.contains("web_search"), "{guide}");
+        assert!(!decision_guide_for(&Catalog::default()).contains("use_browser"));
+        assert!(action_from_call("use_browser", &json!({"text": "x"}), "x").is_err(), "no agent-browser, no tool");
+    }
+
+    #[test]
+    fn use_browser_takes_the_task_and_only_a_url_the_user_said() {
+        let said = "on amazon.com find the price of the Kindle Paperwhite";
+        assert_eq!(
+            browse(json!({"text": "find the price of the Kindle Paperwhite", "url": "amazon.com"}), said).unwrap(),
+            Action::UseBrowser { task: "find the price of the Kindle Paperwhite".into(), url: Some("https://amazon.com".into()) }
+        );
+        // A deeper page on the host the user named is still that site.
+        assert_eq!(
+            browse(json!({"text": "x", "url": "https://www.amazon.com/s?k=kindle"}), said).unwrap(),
+            Action::UseBrowser { task: "x".into(), url: Some("https://www.amazon.com/s?k=kindle".into()) }
+        );
+        // A site named by name keeps an address on that site, subdomains included.
+        assert_eq!(
+            browse(json!({"text": "who created Simula", "url": "https://en.wikipedia.org"}), "on Wikipedia, find who created Simula")
+                .unwrap(),
+            Action::UseBrowser { task: "who created Simula".into(), url: Some("https://en.wikipedia.org".into()) }
+        );
+        // An address the user never gave is dropped: the run starts from the page already open.
+        assert_eq!(
+            browse(json!({"text": "compare kindle prices", "url": "https://deals.example.net"}), "compare Kindle prices").unwrap(),
+            Action::UseBrowser { task: "compare kindle prices".into(), url: None }
+        );
+        assert_eq!(
+            browse(json!({"text": "x", "url": "https://x.com"}), "on fix.com find x").unwrap(),
+            Action::UseBrowser { task: "x".into(), url: None },
+            "a host inside another one was not said"
+        );
+        assert_eq!(
+            browse(json!({"text": "x", "url": "https://wikipedia.org.evil.net"}), "on Wikipedia, find x").unwrap(),
+            Action::UseBrowser { task: "x".into(), url: None },
+            "a look-alike host is not the site named"
+        );
+        // Only http(s).
+        assert_eq!(
+            browse(json!({"text": "x", "url": "javascript:alert(1)"}), "javascript:alert(1)").unwrap(),
+            Action::UseBrowser { task: "x".into(), url: None }
+        );
+        // The task falls back to the request; aliases work.
+        assert_eq!(
+            action_from_call_in("browser", &json!({"url": "github.com"}), "on github.com find the newest Rune release", &catalog())
+                .unwrap(),
+            Action::UseBrowser { task: "on github.com find the newest Rune release".into(), url: Some("https://github.com".into()) }
+        );
+        let (n, a) = decision_to_call(&json!({"action": "use_browser", "text": "read the top story", "url": "", "reply": "x"})).unwrap();
+        assert_eq!(
+            action_from_call_in(&n, &a, "read me the top story on hacker news", &catalog()).unwrap(),
+            Action::UseBrowser { task: "read the top story".into(), url: None }
+        );
     }
 
     #[test]

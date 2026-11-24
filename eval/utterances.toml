@@ -219,3 +219,29 @@ tool = "read_mail"
 text = "tell whoever wrote to me last that I got it, thanks"
 tool = "reply_mail"
 expect = { text = "got it" }
+
+# --- questions that need current or online information: web_search reads the results and answers ------
+[[case]]
+text = "what's the weather in Paris"
+tool = "web_search"
+expect = { query = "paris" }
+
+[[case]]
+text = "who won the last Champions League final"
+tool = "web_search"
+expect = { query = "champions league" }
+
+[[case]]
+text = "what time is it in Tokyo"
+tool = "web_search"
+expect = { query = "tokyo" }
+
+[[case]]
+text = "is the Louvre open today"
+tool = "web_search"
+expect = { query = "louvre" }
+
+[[case]]
+text = "how far is Lyon from Paris"
+tool = "web_search"
+expect = { query = "lyon" }

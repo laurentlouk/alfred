@@ -1,16 +1,30 @@
 //! Alfred's voice and ears, fully on-device through sherpa-onnx:
 //!
-//! - [`Speaker`]: Kokoro-82M v1.0, with phonemes from `misaki-rs` (Kokoro's own G2P, MIT). No espeak-ng,
+//! - [`Speaker`]: Kokoro-82M v1.0 (float32), with phonemes from `misaki-rs` (Kokoro's own G2P, MIT). No espeak-ng,
 //!   so no GPL code ends up in the binary.
 //! - [`Listener`]: Moonshine tiny for dictation.
+//! - [`ears::Ears`]: the listening pipeline on one microphone stream ([`capture::Mic`]): the wake word
+//!   "Alfred" ([`wake::WakeWord`]), Silero voice activity ([`vad::Vad`]) for a quick end of speech, and
+//!   live text while the user speaks.
 //!
-//! Both load from the folder [`models`] downloads to.
+//! All of them load from the folder [`models`] downloads to.
 
+pub mod capture;
+pub mod denoise;
+pub mod ears;
 pub mod models;
 pub mod text;
+pub mod vad;
+pub mod wake;
+
+pub use ears::{Ears, EarsConfig, Heard};
+
+#[cfg(test)]
+mod testkit;
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use sherpa_onnx::{
     GenerationConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineTts, OfflineTtsConfig, OfflineTtsKokoroModelConfig,
@@ -83,6 +97,22 @@ impl Audio {
     }
 }
 
+/// Threads for Kokoro: the Mac's performance cores (`hw.perflevel0.physicalcpu`), read once. Elsewhere,
+/// or when that can't be read, the available parallelism, 2 to 8.
+fn performance_cores() -> i32 {
+    static CORES: OnceLock<i32> = OnceLock::new();
+    *CORES.get_or_init(|| {
+        std::process::Command::new("sysctl")
+            .args(["-n", "hw.perflevel0.physicalcpu"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<i32>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get().clamp(2, 8) as i32).unwrap_or(4))
+    })
+}
+
 /// Kokoro text-to-speech.
 pub struct Speaker {
     tts: OfflineTts,
@@ -105,13 +135,13 @@ impl Speaker {
         let config = OfflineTtsConfig {
             model: OfflineTtsModelConfig {
                 kokoro: OfflineTtsKokoroModelConfig {
-                    model: p("model.int8.onnx"),
+                    model: p(models::KOKORO.required[0]),
                     voices: p("voices.bin"),
                     tokens: p("tokens.txt"),
                     length_scale: 1.0,
                     ..Default::default()
                 },
-                num_threads: std::thread::available_parallelism().map(|n| n.get().clamp(2, 6) as i32).unwrap_or(4),
+                num_threads: performance_cores(),
                 debug: false,
                 ..Default::default()
             },
@@ -262,6 +292,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kokoro_runs_on_the_performance_cores() {
+        let n = performance_cores();
+        assert!((1..=64).contains(&n), "{n}");
+        assert_eq!(performance_cores(), n, "read once");
+    }
+
+    #[test]
     fn voices_resolve() {
         assert_eq!(voice_id("bm_george"), Some(26));
         assert_eq!(voice_id(" AF_HEART "), Some(3));
@@ -319,6 +356,30 @@ mod tests {
     fn alfred_core_models() -> std::path::PathBuf {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
         home.join("Library/Application Support/Alfred/models")
+    }
+
+    /// Run with `cargo test --release -p alfred-voice -- --ignored --nocapture measure`.
+    #[test]
+    #[ignore]
+    fn measure_kokoro() {
+        let m = models();
+        if !models::KOKORO.is_ready(&m) {
+            return;
+        }
+        let speaker = Speaker::load(&m, "bm_george", 1.0).unwrap();
+        speaker.synthesize("Warm up.").unwrap();
+        let reply = "Of course, I have opened Notes, and your shopping list now has milk and eggs.";
+        let time = |t: &str| {
+            let start = std::time::Instant::now();
+            let a = speaker.synthesize(t).unwrap();
+            (start.elapsed().as_secs_f32(), a.seconds())
+        };
+        let first = text::sentences(reply).remove(0);
+        eprintln!("kokoro on {} threads", performance_cores());
+        for t in ["Notes is open.", reply, first.as_str()] {
+            let (took, long) = time(t);
+            eprintln!("kokoro: {took:.2} s for {long:.1} s of {t:?}");
+        }
     }
 
     /// Kokoro says it, Moonshine hears it. Skips itself when the models aren't downloaded.

@@ -1,10 +1,11 @@
-# Requests that reach other apps: the user's Shortcuts and on-screen hands. The catalog below stands in
-# for the shortcuts a user might have, so the score is the same on every Mac.
+# Requests that reach other apps: the user's Shortcuts, on-screen hands and the browser. The catalog below
+# stands in for the shortcuts a user might have, so the score is the same on every Mac.
 #   alfred eval --model eval/apps.toml
 
 [catalog]
 shortcuts = ["Lights Off", "Good Morning", "Start Vacuum", "Living Room Heat Comfort", "Start Pomodoro", "Send Last Photo by SMS", "Allume la lumière"]
 hands = true
+browser = true
 
 # --- named by the user: the router runs them ---------------------------------------------------------
 [[case]]
@@ -73,6 +74,38 @@ expect = { app = "mail" }
 text = "in WhatsApp, tell Marie I'm on my way"
 tool = "use_app"
 expect = { app = "whatsapp" }
+
+# --- tasks on websites: the browser, with an address only when the user said one ----------------------
+[[case]]
+text = "on amazon.com, find the price of the Kindle Paperwhite"
+tool = "use_browser"
+expect = { task = "kindle", url = "amazon.com" }
+
+[[case]]
+text = "on Wikipedia, find out who created the Simula language"
+tool = "use_browser"
+expect = { task = "simula" }
+
+[[case]]
+text = "compare the price of AirPods Pro on apple.com and amazon.fr"
+tool = "use_browser"
+expect = { task = "airpods" }
+
+[[case]]
+text = "go through the first three results for rust gui frameworks and tell me which is the most popular"
+tool = "use_browser"
+expect = { task = "rust gui" }
+
+# --- a question about the world now is still a search, answered from the results ---------------------
+[[case]]
+text = "what's the weather in Paris"
+tool = "web_search"
+expect = { query = "paris" }
+
+[[case]]
+text = "open wikipedia.org"
+tool = "open_url"
+expect = { url = "wikipedia.org" }
 
 # --- still the everyday tools -------------------------------------------------------------------------
 [[case]]

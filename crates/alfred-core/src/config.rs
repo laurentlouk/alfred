@@ -14,6 +14,7 @@ pub struct Config {
     pub search: SearchConfig,
     pub shortcuts: ShortcutsConfig,
     pub desktop: DesktopConfig,
+    pub browser: BrowserConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +50,47 @@ pub struct DesktopConfig {
 impl Default for DesktopConfig {
     fn default() -> Self {
         Self { enabled: true, model: "qwen3:8b".into(), max_steps: 8, command: "agent-desktop".into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserConfig {
+    /// Do tasks on websites through `agent-browser` when it is installed. The steps are decided by the
+    /// model in `[desktop] model`, which needs structured output.
+    pub enabled: bool,
+    /// The `agent-browser` program: a name looked up on PATH and in Homebrew's folders, or a full path.
+    pub command: String,
+    /// The browser's own profile folder, so its sign-ins survive between runs. Never one of the user's
+    /// Chrome profiles. A leading `~/` is the home folder.
+    pub profile: String,
+    /// Show the browser window, so the user can watch and step in for a CAPTCHA or a sign-in code.
+    pub headed: bool,
+    /// The most steps one request may take.
+    pub max_steps: u32,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            command: "agent-browser".into(),
+            profile: home_dir().join("browser").display().to_string(),
+            headed: true,
+            max_steps: 10,
+        }
+    }
+}
+
+impl BrowserConfig {
+    /// The profile folder as a path, with `~/` expanded.
+    pub fn profile_dir(&self) -> PathBuf {
+        let p = self.profile.trim();
+        match p.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(rest),
+            None if p.is_empty() => home_dir().join("browser"),
+            None => PathBuf::from(p),
+        }
     }
 }
 
@@ -149,15 +191,19 @@ pub struct VoiceConfig {
     /// A Kokoro v1.0 voice: `bm_george` (British, male) suits a butler; `af_heart`, `bf_emma`, `am_michael`…
     pub voice: String,
     pub speed: f32,
-    /// Seconds of quiet that end dictation.
+    /// Seconds of quiet that end dictation when what was said doesn't sound finished ("open Notes and…");
+    /// a finished sentence ends sooner.
     pub silence_secs: f32,
     /// Longest dictation, in seconds.
     pub max_listen_secs: f32,
+    /// Keep the microphone open and listen for "Alfred", like "Hey Siri". The microphone indicator stays
+    /// on while it does; everything is heard on the Mac and nothing is kept until "Alfred" is said.
+    pub wake_word: bool,
 }
 
 impl Default for VoiceConfig {
     fn default() -> Self {
-        Self { speak: true, voice: "bm_george".into(), speed: 1.05, silence_secs: 1.4, max_listen_secs: 20.0 }
+        Self { speak: true, voice: "bm_george".into(), speed: 1.05, silence_secs: 1.2, max_listen_secs: 20.0, wake_word: false }
     }
 }
 
@@ -255,6 +301,19 @@ mod tests {
         assert!(c.shortcuts.enabled && c.shortcuts.trusted.is_empty());
         assert_eq!(c.desktop.model, "qwen3:8b");
         assert_eq!(c.llm.with_model("qwen3:4b").base_url, c.llm.base_url);
+    }
+
+    #[test]
+    fn the_browser_is_on_headed_with_its_own_profile_under_alfreds_folder() {
+        let b = Config::default().browser;
+        assert!(b.enabled && b.headed);
+        assert_eq!((b.command.as_str(), b.max_steps), ("agent-browser", 10));
+        assert_eq!(b.profile_dir(), home_dir().join("browser"));
+        let c: Config = toml::from_str("[browser]\nprofile = \"~/Browsers/alfred\"\nheaded = false\n").unwrap();
+        assert!(!c.browser.headed && c.browser.enabled);
+        assert!(c.browser.profile_dir().ends_with("Browsers/alfred") && !c.browser.profile_dir().starts_with("~"));
+        let blank = BrowserConfig { profile: " ".into(), ..BrowserConfig::default() };
+        assert_eq!(blank.profile_dir(), home_dir().join("browser"));
     }
 
     #[test]

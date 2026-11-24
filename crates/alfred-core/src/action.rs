@@ -30,8 +30,12 @@ pub enum Action {
     RunShortcut { name: String, input: Option<String> },
     /// Operate an app on screen to do a task no other tool covers (needs `agent-desktop`).
     UseApp { app: String, task: String },
-    /// Click one named control in an app: the irreversible step a [`Action::UseApp`] run stopped before.
+    /// Click one named control in an app: the irreversible step a [`Action::UseApp`] or
+    /// [`Action::UseBrowser`] run stopped before. `app` is [`BROWSER_APP`] for a web page.
     PressButton { app: String, role: String, name: String },
+    /// Do a task on websites that takes more than one step (needs `agent-browser`), starting at `url` when
+    /// the user gave one.
+    UseBrowser { task: String, url: Option<String> },
     /// Read the newest email in Mail's inbox, or the newest from `from` (part of a name or an address).
     ReadMail { from: Option<String> },
     /// Open a reply to the newest email (from `from` when given) with `text` in it. Alfred never sends
@@ -39,6 +43,9 @@ pub enum Action {
     #[serde(rename = "reply_mail")]
     DraftReply { from: Option<String>, text: String },
 }
+
+/// The `app` of a [`Action::PressButton`] held on a web page.
+pub const BROWSER_APP: &str = "Browser";
 
 /// How careful Alfred must be before running an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,17 +70,26 @@ impl Action {
             Action::RunShortcut { .. } => "run_shortcut",
             Action::UseApp { .. } => "use_app",
             Action::PressButton { .. } => "press_button",
+            Action::UseBrowser { .. } => "use_browser",
             Action::ReadMail { .. } => "read_mail",
             Action::DraftReply { .. } => "reply_mail",
         }
     }
 
     /// Its words carry text someone else wrote: an email's body, or its sender and subject (named in a
-    /// reply's summary), an app's window, or a button's name read off one. The conversation history keeps
-    /// a plain phrase instead, so the model never reads that text as part of the conversation on a later
-    /// turn.
+    /// reply's summary), an app's window or a web page (a search's answer is read off its results), or a
+    /// button's name read off one. The conversation history keeps a plain phrase instead, so the model never
+    /// reads that text as part of the conversation on a later turn.
     pub fn reads_outside_text(&self) -> bool {
-        matches!(self, Action::ReadMail { .. } | Action::DraftReply { .. } | Action::UseApp { .. } | Action::PressButton { .. })
+        matches!(
+            self,
+            Action::WebSearch { .. }
+                | Action::ReadMail { .. }
+                | Action::DraftReply { .. }
+                | Action::UseApp { .. }
+                | Action::PressButton { .. }
+                | Action::UseBrowser { .. }
+        )
     }
 
     /// Shortcuts drive real devices and a small model can pick the wrong one, so running one confirms
@@ -97,7 +113,9 @@ impl Action {
             Action::GetTime => "Checking the time".into(),
             Action::RunShortcut { name, .. } => format!("Running “{}”", clip(name, 32)),
             Action::UseApp { app, .. } => format!("Using {app}"),
-            Action::PressButton { app, name, .. } => format!("Clicking “{}” in {app}", clip(name, 24)),
+            Action::PressButton { app, name, .. } => format!("Clicking “{}” in {}", clip(name, 24), place(app)),
+            Action::UseBrowser { url: Some(u), .. } => format!("Browsing {}", host_of(u)),
+            Action::UseBrowser { url: None, .. } => "Using the browser".into(),
             Action::ReadMail { from: None } => "Reading your latest email".into(),
             Action::ReadMail { from: Some(f) } => format!("Reading the latest email from {}", clip(f, 24)),
             Action::DraftReply { from: None, .. } => "Drafting a reply".into(),
@@ -117,7 +135,9 @@ impl Action {
             Action::GetTime => "Tell the time".into(),
             Action::RunShortcut { name, .. } => format!("Run the shortcut “{}”", clip(name, 32)),
             Action::UseApp { app, task } => format!("In {app}: {}", clip(task, 40)),
-            Action::PressButton { app, name, .. } => format!("Click “{}” in {app}", clip(name, 32)),
+            Action::PressButton { app, name, .. } => format!("Click “{}” in {}", clip(name, 32), place(app)),
+            Action::UseBrowser { task, url: Some(u) } => format!("On {}: {}", host_of(u), clip(task, 40)),
+            Action::UseBrowser { task, url: None } => format!("In the browser: {}", clip(task, 40)),
             Action::ReadMail { from: None } => "Read the latest email".into(),
             Action::ReadMail { from: Some(f) } => format!("Read the latest email from {}", clip(f, 28)),
             Action::DraftReply { from: None, .. } => "Draft a reply to the latest email".into(),
@@ -130,7 +150,7 @@ impl Action {
         match self {
             Action::QuitApp { name } => format!("Shall I quit {name}?"),
             Action::RunShortcut { name, .. } => format!("Shall I run the shortcut “{name}”?"),
-            Action::PressButton { app, name, .. } => format!("Shall I click “{name}” in {app}?"),
+            Action::PressButton { app, name, .. } => format!("Shall I click “{name}” in {}?", place(app)),
             other => format!("Shall I go ahead: {}?", other.progress_label().to_lowercase()),
         }
     }
@@ -150,11 +170,17 @@ impl Action {
             Action::GetTime => "Here is the time.".into(),
             Action::RunShortcut { name, .. } => format!("I've run “{name}”."),
             Action::UseApp { app, .. } => format!("Done in {app}."),
-            Action::PressButton { app, name, .. } => format!("I've clicked “{name}” in {app}."),
+            Action::PressButton { app, name, .. } => format!("I've clicked “{name}” in {}.", place(app)),
+            Action::UseBrowser { .. } => "Done in the browser.".into(),
             Action::ReadMail { .. } => "I've read you the latest email.".into(),
             Action::DraftReply { .. } => "I've opened a reply in Mail for you to check and send.".into(),
         }
     }
+}
+
+/// Where a held click happens, in words: an app's name, or "the browser".
+fn place(app: &str) -> &str {
+    if app == BROWSER_APP { "the browser" } else { app }
 }
 
 /// "1 minute", "20 minutes", "1 hour", "2 hours 30 minutes".
@@ -211,6 +237,19 @@ pub trait Hands: Send + Sync {
     fn use_app(&self, app: &str, task: &str) -> Result<Outcome, String>;
     /// Find the control by role and name in `app` and click it.
     fn press(&self, app: &str, role: &str, name: &str) -> Result<Outcome, String>;
+}
+
+/// Operating web pages. `alfred-hands` implements it with `agent-browser`; the executor delegates
+/// [`Action::UseBrowser`], and a [`Action::PressButton`] in [`BROWSER_APP`], to it.
+pub trait WebHands: Send + Sync {
+    /// Work towards `task` on the web, starting at `url` when given, else on the page already open. Stops
+    /// before irreversible clicks and returns them as the outcome's follow-up.
+    fn browse(&self, task: &str, url: Option<&str>) -> Result<Outcome, String>;
+    /// Find the control by role and name on the open page and click it.
+    fn press(&self, role: &str, name: &str) -> Result<Outcome, String>;
+    /// Search the web for `query`, leave the results open, and answer from them in a sentence or two. An
+    /// error means the results couldn't be read, so the caller opens them some other way.
+    fn answer(&self, query: &str) -> Result<Outcome, String>;
 }
 
 /// Performs actions. `alfred-mac` provides the real one; [`DryRun`] records instead.
@@ -287,6 +326,45 @@ mod tests {
         assert_eq!(reply.tool_name(), "reply_mail");
         assert!(read.reads_outside_text() && reply.reads_outside_text(), "a reply's summary names the sender and subject");
         assert_eq!(serde_json::to_value(&reply).unwrap()["text"], "See you at 3.");
+    }
+
+    #[test]
+    fn browser_tasks_are_safe_and_keep_page_text_out_of_history() {
+        let browse =
+            Action::UseBrowser { task: "find the price of a Kindle".into(), url: Some("https://www.amazon.com/s?k=kindle".into()) };
+        assert_eq!(browse.tool_name(), "use_browser");
+        assert_eq!(browse.risk(), Risk::Safe);
+        assert!(browse.reads_outside_text(), "page text is written by others");
+        assert_eq!(browse.progress_label(), "Browsing amazon.com");
+        assert_eq!(Action::UseBrowser { task: "x".into(), url: None }.progress_label(), "Using the browser");
+        assert_eq!(browse.short_label(), "On amazon.com: find the price of a Kindle");
+        assert_eq!(browse.done_phrase(), "Done in the browser.");
+        let v = serde_json::to_value(&browse).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"tool": "use_browser", "task": "find the price of a Kindle", "url": "https://www.amazon.com/s?k=kindle"})
+        );
+        assert_eq!(serde_json::from_value::<Action>(v).unwrap(), browse);
+    }
+
+    #[test]
+    fn a_search_answers_from_web_pages_so_its_words_stay_out_of_history() {
+        let search = Action::WebSearch { query: "weather in Paris".into(), browser: None };
+        assert_eq!(search.risk(), Risk::Safe);
+        assert!(search.reads_outside_text(), "the answer is read off the results page");
+        assert!(!Action::OpenUrl { url: "https://example.com".into(), browser: None }.reads_outside_text());
+        assert_eq!(search.done_phrase(), "Here are the results for “weather in Paris”.");
+    }
+
+    #[test]
+    fn a_click_held_in_the_browser_says_so_in_words() {
+        let press = Action::PressButton { app: BROWSER_APP.into(), role: "button".into(), name: "Place order".into() };
+        assert_eq!(press.risk(), Risk::Confirm);
+        assert_eq!(press.confirm_question(), "Shall I click “Place order” in the browser?");
+        assert_eq!(press.done_phrase(), "I've clicked “Place order” in the browser.");
+        assert_eq!(press.progress_label(), "Clicking “Place order” in the browser");
+        let mail = Action::PressButton { app: "Mail".into(), role: "button".into(), name: "Send".into() };
+        assert_eq!(mail.confirm_question(), "Shall I click “Send” in Mail?");
     }
 
     #[test]

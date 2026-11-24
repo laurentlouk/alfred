@@ -168,7 +168,7 @@ fn shortcuts() -> crate::catalog::Catalog {
         shortcuts: ["Focus Timer", "Bonjour", "démarre la musique", "Chauffage salon confort", "Chauffage salon éco"]
             .map(String::from)
             .to_vec(),
-        hands: false,
+        ..Default::default()
     }
 }
 

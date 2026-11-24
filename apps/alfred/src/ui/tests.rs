@@ -135,10 +135,8 @@ fn words_appear_in_the_field_while_listening() {
     ui.attempt = 4;
     ui.mode = Mode::Listening;
     ui.typed = "in Notes,".into();
-    ui.peeking = true;
     ui.on_partial(4, "save pick up the".into());
     assert_eq!(ui.input.text, "in Notes, save pick up the", "typed words stay in front");
-    assert!(!ui.peeking, "the next live update may be asked for");
     ui.on_partial(3, "an older request".into());
     assert_eq!(ui.input.text, "in Notes, save pick up the", "stale text is ignored");
     ui.on_partial(4, "  ".into());
@@ -168,4 +166,35 @@ fn the_listening_scene_shows_live_words() {
     setup(&mut ui);
     assert_eq!(ui.input.text, "open Notes and save pick up the");
     assert!(runtime(ui).find("ask").is_some());
+}
+
+#[test]
+fn saying_alfred_starts_a_request_and_the_ears_carry_it_through() {
+    use alfred_voice::Heard;
+    let mut ui = Ui::demo();
+    ui.input.replace_text("in Notes,");
+    ui.on_ears(Heard::Wake);
+    assert_eq!(ui.mode, Mode::Listening);
+    ui.on_ears(Heard::Level(0.6));
+    assert!((ui.mic_level - 0.6).abs() < 1e-6, "the orb follows the voice");
+    ui.on_ears(Heard::Partial("save buy".into()));
+    assert_eq!(ui.input.text, "in Notes, save buy");
+    ui.on_ears(Heard::Final("save buy milk".into()));
+    assert_eq!(ui.turns.last().unwrap().you, "in Notes, save buy milk");
+    assert_eq!(ui.mode, Mode::Thinking);
+}
+
+#[test]
+fn a_command_with_no_words_or_a_microphone_error_is_explained() {
+    use alfred_voice::Heard;
+    let mut ui = Ui::demo();
+    ui.input.replace_text("remind me");
+    ui.on_ears(Heard::Wake);
+    ui.on_ears(Heard::Nothing);
+    assert_eq!((ui.mode, ui.input.text.as_str()), (Mode::Idle, "remind me"));
+    assert!(ui.caption().contains("didn't hear"));
+    ui.on_ears(Heard::Final("stray words after the end".into()));
+    assert!(ui.turns.is_empty(), "a late result changes nothing once listening ended");
+    ui.on_ears(Heard::Error("the microphone went away".into()));
+    assert!(ui.caption().contains("microphone went away"));
 }

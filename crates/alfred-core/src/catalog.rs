@@ -1,5 +1,5 @@
 //! What this Mac offers beyond the built-in tools: the user's Shortcuts, and whether Alfred can operate
-//! apps on screen. The router and the model's schema both read it.
+//! apps on screen and web pages. The router and the model's schema both read it.
 
 /// The optional capabilities found at start.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -8,6 +8,8 @@ pub struct Catalog {
     pub shortcuts: Vec<String>,
     /// `agent-desktop` is available, so `use_app` can be offered.
     pub hands: bool,
+    /// `agent-browser` is available, so `use_browser` can be offered.
+    pub browser: bool,
 }
 
 impl Catalog {
@@ -74,7 +76,7 @@ mod tests {
             shortcuts: ["Focus Timer", "Chauffage salon éco", "Chauffage salon confort", "démarre la musique", "Bonjour", "Réveil"]
                 .map(String::from)
                 .to_vec(),
-            hands: false,
+            ..Catalog::default()
         }
     }
 

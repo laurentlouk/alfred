@@ -10,6 +10,30 @@ use std::time::Duration;
 
 use alfred_voice::Speaker;
 
+/// The average level speech is brought to, about -16 dBFS like most apps' audio, so Alfred sounds as loud
+/// as the rest of the Mac at the same system volume. Kokoro renders around -23 dBFS.
+const TARGET_RMS: f32 = 0.16;
+/// The loudest a sample may get, below clipping.
+const MAX_PEAK: f32 = 0.92;
+
+/// Raise a sentence to [`TARGET_RMS`] without its peak passing [`MAX_PEAK`]. Never makes it quieter, and
+/// never more than 4 times louder (a near-silent clip stays near silent). Playback through `afplay` then
+/// follows the system volume.
+pub fn louder(samples: &mut [f32]) {
+    if samples.is_empty() {
+        return;
+    }
+    let peak = samples.iter().fold(0f32, |m, x| m.max(x.abs()));
+    let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt();
+    if peak <= f32::EPSILON || rms <= f32::EPSILON {
+        return;
+    }
+    let gain = (TARGET_RMS / rms).min(MAX_PEAK / peak).clamp(1.0, 4.0);
+    for x in samples.iter_mut() {
+        *x *= gain;
+    }
+}
+
 /// What is playing now, so a new request (or Escape) can cut it off.
 #[derive(Default)]
 pub struct Playback {
@@ -94,10 +118,11 @@ pub fn speak(
     });
     let mut result = Ok(());
     let pid = std::process::id();
-    speaker.speak_each(text, |i, audio| {
+    speaker.speak_each(text, |i, mut audio| {
         if playback.current() != generation {
             return false;
         }
+        louder(&mut audio.samples);
         let path = scratch.join(format!("speech-{pid}-{generation}-{i}.wav"));
         if let Err(e) = audio.write_wav(&path) {
             result = Err(e);
@@ -108,4 +133,34 @@ pub fn speak(
     drop(tx);
     player.join().ok();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rms(s: &[f32]) -> f32 {
+        (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn quiet_speech_is_raised_to_the_target_without_clipping() {
+        // Kokoro's own level: about -23 dBFS on average, peaks near -8 dBFS.
+        // Mostly soft syllables with occasional peaks, as Kokoro renders speech.
+        let mut s: Vec<f32> = (0..40_000).map(|i| (i as f32 * 0.05).sin() * if (i / 2_000) % 10 == 0 { 0.38 } else { 0.057 }).collect();
+        let before = rms(&s);
+        louder(&mut s);
+        assert!(rms(&s) > before * 1.5, "louder: {} -> {}", before, rms(&s));
+        assert!(s.iter().all(|x| x.abs() <= MAX_PEAK + 1e-4), "never clips");
+    }
+
+    #[test]
+    fn loud_audio_and_silence_are_left_alone() {
+        let mut loud = vec![0.9, -0.9, 0.5];
+        louder(&mut loud);
+        assert_eq!(loud, vec![0.9, -0.9, 0.5], "never quieter");
+        let mut silent = vec![0.0; 10];
+        louder(&mut silent);
+        assert!(silent.iter().all(|x| *x == 0.0));
+    }
 }
