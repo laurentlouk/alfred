@@ -162,3 +162,142 @@ fn clean_strips_politeness_only_at_the_edges() {
     assert_eq!(clean("Could you please search for thank you cards"), "search for thank you cards");
     assert_eq!(clean("alfredo pasta recipe"), "alfredo pasta recipe");
 }
+
+fn shortcuts() -> crate::catalog::Catalog {
+    crate::catalog::Catalog {
+        shortcuts: ["Focus Timer", "Bonjour", "démarre la musique", "Chauffage salon confort", "Chauffage salon éco"]
+            .map(String::from)
+            .to_vec(),
+        ..Default::default()
+    }
+}
+
+fn shortcut(name: &str) -> Action {
+    Action::RunShortcut { name: name.into(), input: None }
+}
+
+#[test]
+fn named_shortcuts_route_directly() {
+    let c = shortcuts();
+    let act = |t: &str| match route_with(t, &c) {
+        Some(Route::Act(a)) => a,
+        other => panic!("{t:?} → {other:?}"),
+    };
+    assert_eq!(act("run Bonjour"), shortcut("Bonjour"));
+    assert_eq!(act("run the Bonjour shortcut"), shortcut("Bonjour"));
+    assert_eq!(act("lance le raccourci démarre la musique"), shortcut("démarre la musique"));
+    assert_eq!(act("run demarre la musique"), shortcut("démarre la musique"));
+    assert_eq!(act("run salon confort"), shortcut("Chauffage salon confort"));
+    assert_eq!(act("Focus Timer"), shortcut("Focus Timer"), "a two-word name said on its own");
+    assert_eq!(act("hey alfred, focus timer please"), shortcut("Focus Timer"));
+}
+
+#[test]
+fn shortcuts_never_fire_by_accident() {
+    let c = shortcuts();
+    assert_eq!(route_with("bonjour", &c), None, "a one-word name needs the verb");
+    assert_eq!(route_with("run chauffage salon", &c), None, "two shortcuts match: the model decides");
+    assert_eq!(
+        route_with("start spotify", &c),
+        Some(Route::Act(Action::OpenApp { name: "Spotify".into() })),
+        "not a shortcut: open the app"
+    );
+    assert_eq!(route("run Bonjour"), None, "no catalog, no shortcuts");
+}
+
+#[test]
+fn start_only_opens_apps_alfred_knows() {
+    assert_eq!(act("start spotify"), app("Spotify"));
+    assert_eq!(act("start the music app"), app("Music"));
+    assert_eq!(route("start the vacuum"), None);
+    assert_eq!(route("start a timer for five minutes"), None);
+    assert_eq!(act("open the vacuum app"), app("Vacuum"), "open names an app whatever it is");
+}
+
+fn read_mail(from: Option<&str>) -> Action {
+    Action::ReadMail { from: from.map(String::from) }
+}
+
+fn draft(from: Option<&str>, text: &str) -> Action {
+    Action::DraftReply { from: from.map(String::from), text: text.into() }
+}
+
+#[test]
+fn reads_the_newest_email() {
+    assert_eq!(act("read my last email"), read_mail(None));
+    assert_eq!(act("Alfred, can you read me my latest e-mail?"), read_mail(None));
+    assert_eq!(act("what's my most recent email about"), read_mail(None));
+    assert_eq!(act("what does my last mail say"), read_mail(None));
+    assert_eq!(act("who sent my last email"), read_mail(None));
+    assert_eq!(act("who emailed me last"), read_mail(None));
+    assert_eq!(act("check my newest email"), read_mail(None));
+    assert_eq!(act("read the last email from Ada"), read_mail(Some("Ada")));
+    assert_eq!(act("lis mon dernier mail"), read_mail(None));
+    assert_eq!(act("lis-moi le dernier e-mail de Marie"), read_mail(Some("Marie")));
+    assert_eq!(act("qui m'a écrit en dernier"), read_mail(None));
+    assert_eq!(act("anything new in my inbox?"), read_mail(None));
+    assert_eq!(act("Do I have any new emails?"), read_mail(None));
+    assert_eq!(act("check my email"), read_mail(None));
+    assert_eq!(act("est-ce que j'ai des nouveaux mails ?"), read_mail(None));
+}
+
+#[test]
+fn drafts_a_reply_with_the_users_words() {
+    assert_eq!(act("reply to my last email saying I'll be there at 3"), draft(None, "I'll be there at 3"));
+    assert_eq!(act("reply to my last email saying I'll be late, and leave it as a draft"), draft(None, "I'll be late"));
+    assert_eq!(act("draft a reply to the latest email: thanks, see you Friday"), draft(None, "Thanks, see you Friday"));
+    assert_eq!(act("answer my newest mail and say yes please count me in"), draft(None, "Yes please count me in"));
+    assert_eq!(act("reply in draft to the last email from Ada with thanks"), draft(Some("Ada"), "Thanks"));
+    assert_eq!(act("réponds au dernier mail de Marie en disant merci, à demain"), draft(Some("Marie"), "Merci, à demain"));
+    assert_eq!(act("réponds à mon dernier mail en brouillon : c'est noté"), draft(None, "C'est noté"));
+    assert_eq!(act("read my last email and reply saying on my way"), draft(None, "On my way"));
+}
+
+#[test]
+fn a_reply_without_words_asks_for_them() {
+    match route("reply to my last email") {
+        Some(Route::Ask { slot: Slot::ReplyText { from: None }, first: None, .. }) => {}
+        other => panic!("{other:?}"),
+    }
+    match route("read my last email from Ada and reply to it") {
+        Some(Route::Ask { slot, first, question }) => {
+            assert_eq!(first, Some(read_mail(Some("Ada"))), "read it aloud first");
+            assert_eq!(question, "What shall I say in the reply?");
+            assert_eq!(slot.fill("see you soon"), Some(draft(Some("Ada"), "See you soon")));
+            assert_eq!(slot.fill("never mind"), None);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn other_emails_and_other_things_go_to_the_model() {
+    assert_eq!(route("read the email about the invoice"), None, "not the newest: the model decides");
+    assert_eq!(route("reply to Marie on WhatsApp saying hi"), None);
+    assert_eq!(route("answer the phone"), None);
+    assert_eq!(route("read my last two emails"), None);
+    assert_eq!(route("réponds au dernier mail que j'ai reçu"), None, "\"que\" is not taken as the reply's text");
+    assert_eq!(route("read my last note"), None);
+    assert!(matches!(route("remind me to answer my last email"), Some(Route::Act(Action::CreateReminder { .. }))));
+}
+
+#[test]
+fn words_about_a_page_are_left_to_the_model_which_knows_where_the_user_is() {
+    for text in [
+        "open the second story",
+        "open the first link",
+        "open the top result",
+        "open the next article",
+        "ouvre le premier lien",
+        "search for wireless headphones on this site",
+        "search for headphones here",
+        "search this page for the price",
+        "cherche des casques sur ce site",
+    ] {
+        assert_eq!(route(text), None, "{text:?}");
+    }
+    // Apps and plain searches still go straight through.
+    assert_eq!(act("open the App Store"), app("App Store"));
+    assert_eq!(act("open notes"), app("Notes"));
+    assert_eq!(act("search for wireless headphones"), search_for("wireless headphones"));
+}

@@ -5,13 +5,17 @@
 
 pub mod action;
 pub mod agent;
+pub mod catalog;
 pub mod config;
+pub mod context;
 pub mod eval;
 pub mod llm;
 pub mod normalize;
+pub mod record;
 pub mod router;
 pub mod tools;
 
-pub use action::{Action, DryRun, Executor, Outcome, Risk};
+pub use action::{Action, DryRun, Executor, Hands, Outcome, Risk};
 pub use agent::{Agent, Done, Event, Source, Turn};
+pub use catalog::Catalog;
 pub use config::Config;

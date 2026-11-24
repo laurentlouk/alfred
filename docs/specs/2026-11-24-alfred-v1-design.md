@@ -30,11 +30,17 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
 1. **Rust workspace, UI in Rune pinned to a `dev` revision** (`b3503d9`, toolchain 1.99.1, every
    `[patch.crates-io]` entry at the same rev, as Rune's README requires). *Rejected:* SwiftUI (not Rune),
    Tauri plus a web UI (heavier, and not what was asked).
-2. **One accessory app (no Dock icon) with a launcher panel summoned by a global shortcut**, default
-   `ctrl+alt+space` (configurable). `alt+space` is avoided because the Alfred launcher and ChatGPT already
-   claim it. Escape or losing focus hides the panel. Rune has no macOS status item yet, so v1 ships
-   without a menu-bar icon. *Rejected:* a regular windowed app (an assistant should be one keystroke away);
-   an always-on overlay (v2).
+2. **A regular app (Dock icon, ⌘Tab) whose one window is drawn as a panel and summoned by a global
+   shortcut**, default `ctrl+shift+space` (configurable). `alt+space` is avoided because the Alfred launcher
+   and ChatGPT already claim it; `ctrl+alt+space`, the first default, turned out to be macOS's "Select next
+   source in Input menu", on whenever a Mac has two keyboard layouts, which takes the keystroke first. Escape
+   puts the panel away (hidden, never closed: in Rune a closed window ends the app's run, shortcut
+   included); a click on the Dock icon brings it back. *Changed after the owner's first use (2026-11-24):*
+   v1 was an accessory app with a floating launcher panel that hid when it lost focus. The owner wanted
+   Alfred in the Dock and in ⌘Tab like other apps, and a launcher panel never makes its app the active
+   one, so switching to Alfred couldn't bring it back. The panel now stays behind other apps' windows
+   (`[ui] hide_on_blur = true` restores hiding). Rune has no macOS status item yet, so there is no
+   menu-bar icon. *Rejected:* an always-on overlay (v2).
 3. **Two-tier brain: a deterministic intent router first, then the LLM agent with tools, then plain chat.**
    Measured on 2026-11-24: `qwen3:0.6b` picked `create_note` for "save a note that I need to buy milk
    tomorrow" in 1.9 s, but returned `body` as an object instead of a string. The router handles the common
@@ -49,6 +55,8 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
    (about 520 MB), which is small enough to test with. The README recommends `qwen3.5:0.8b` or `qwen3:4b`
    for daily use. *Rejected:* in-process llama.cpp (slow builds and model management; a v2 candidate);
    the RunAnywhere SDK (Swift only, and its license restricts larger companies).
+   *Thinking on demand (added 2026-11-24):* hard questions are asked again with `think: true`, optionally
+   on a second model (`think_model`); see `2026-11-24-listening-thinking-orb-design.md`, decisions 9 to 11.
 6. **Typed tool registry with risk levels.** Each tool has a name, a description, a JSON schema, a risk
    (`Safe` or `Confirm`) and an executor. Confirm-level tools pause on a Yes/No chip in the panel, or a
    prompt in the CLI. v1 tools: `open_app`, `quit_app` (Confirm), `create_note`, `create_reminder`,
@@ -57,17 +65,25 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
    never goes into the script source, so AppleScript injection is impossible by construction. `open_url`
    accepts `http` and `https` only. App names must not contain a path. A `DryRun` executor records actions
    instead of running them, for tests and the eval.
-8. **Voice out: Kokoro-82M v1.0 int8 through `sherpa-onnx` (prebuilt static libs, Apache-2.0), with
+8. **Voice out:** (superseded 2026-11-24: now the float32 build on the performance cores, brought to a
+   speaking loudness; see `2026-11-24-listening-thinking-orb-design.md`, decisions 7 and 8) **Kokoro-82M v1.0 int8 through `sherpa-onnx` (prebuilt static libs, Apache-2.0), with
    phonemes from `misaki-rs` (MIT, Kokoro's own G2P), voice `bm_george` (id 26).** Measured: misaki
    phonemes round-tripped through Moonshine almost word for word, while sherpa's lexicon mode silently
    dropped "opened" as out-of-vocabulary. Speech is synthesized sentence by sentence so the first words
    play while the rest render (Kokoro ran at about real time on an M1 Max). macOS `say` is the fallback
    while the models are missing. *Rejected:* `piper-phonemize` and espeak-ng (GPL-3.0, would make the
    binaries GPL), a Python kokoro-onnx sidecar (a second runtime), Kokoro-FastAPI (Docker).
-9. **Voice in: Rune's `Recorder` (16 kHz WAV) plus Moonshine tiny EN quantized (28 MB) through
-   `sherpa-onnx`.** Click the orb to talk. Recording stops on a click, after 1.4 s of silence, or after
+9. **Voice in:** (superseded 2026-11-24: one microphone stream with a wake word, Silero VAD and a
+   denoiser; see `2026-11-24-listening-thinking-orb-design.md`, decisions 1 to 6) **Rune's `Recorder` (16 kHz WAV) plus Moonshine tiny EN
+   quantized (28 MB) through `sherpa-onnx`.** Click the orb to talk. Recording stops on a click, after 1.4 s of silence, or after
    20 s. Measured: 4.4 s of speech transcribed in 55 ms. *Rejected:* whisper.cpp (a bigger model and
    build), Apple SpeechAnalyzer (Objective-C bridging, macOS only).
+   *Live text (added 2026-11-24, at the owner's request):* while you speak, the words appear in the field.
+   Every 0.6 s the voice thread transcribes the recording so far, read from the WAV still being written
+   (its sizes are only filled in when it stops, so the reader takes everything after the `data` chunk). At
+   55 ms for 4 s of speech, re-transcribing the whole recording costs less than a streaming model would to
+   add. A file that can't be read yet shows nothing, and the final transcription is unchanged. *Rejected:*
+   a streaming recognizer (another model to download, English only).
 10. **Models and config live in `~/Library/Application Support/Alfred/`** (`config.toml`, `models/`).
     `alfred setup` downloads Kokoro and Moonshine from the official k2-fsa releases and pulls the Ollama
     model. `alfred doctor` reports what is ready and what is missing.
@@ -77,7 +93,8 @@ speak with Kokoro, be MIT open source, and be built with [Rune](https://github.c
 12. **Crates:** `alfred-core` (router, agent, tools, repair, config, eval; no Rune, no native code),
     `alfred-mac` (macOS executors), `alfred-voice` (Kokoro, Moonshine, model download), and
     `apps/alfred` (the Rune UI and the CLI).
-13. **UI:** a 560-point-wide dark card. A brass "Alfred orb" (concentric dotted rings) breathes when
+13. **UI:** (superseded 2026-11-24: a transparent, always-on-top window holding a green liquid orb drawn
+    on the GPU, on every Space; see `2026-11-24-listening-thinking-orb-design.md`, decision 12) A 560-point-wide dark card. A brass "Alfred orb" (concentric dotted rings) breathes when
     idle, ripples with the input level while listening, spins while thinking and pulses while speaking.
     Below it: a state caption ("At your service."), the input field, the last turns with tool chips
     ("Opened Notes", "Saved note 'Milk'"), and Yes/No chips for Confirm tools. Headless scenes (`idle`,

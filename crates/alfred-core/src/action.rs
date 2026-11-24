@@ -26,7 +26,32 @@ pub enum Action {
     OpenUrl { url: String, browser: Option<String> },
     /// Say the local time and date.
     GetTime,
+    /// Run one of the user's Shortcuts, optionally with text as its input.
+    RunShortcut { name: String, input: Option<String> },
+    /// Operate an app on screen to do a task no other tool covers (needs `agent-desktop`).
+    UseApp { app: String, task: String },
+    /// Write a message in a chat app (WhatsApp, Messages, Slack…): to `to` (a person or chat the user named),
+    /// else in the newest conversation or the app's one message box. Sending waits for the user's yes.
+    SendMessage { app: String, to: Option<String>, text: String },
+    /// Click one named control in an app: the irreversible step a [`Action::UseApp`] or
+    /// [`Action::UseBrowser`] run stopped before. `app` is [`BROWSER_APP`] for a web page.
+    PressButton { app: String, role: String, name: String },
+    /// Do a task on websites that takes more than one step (needs `agent-browser`), starting at `url` when
+    /// the user gave one.
+    UseBrowser { task: String, url: Option<String> },
+    /// Do a task on the page the user is looking at in their own browser ("this page", "here"): in their
+    /// tab when Alfred works in their Chrome, else on the same page in Alfred's tab.
+    UseTheirTab { task: String },
+    /// Read the newest email in Mail's inbox, or the newest from `from` (part of a name or an address).
+    ReadMail { from: Option<String> },
+    /// Open a reply to the newest email (from `from` when given) with `text` in it. Alfred never sends
+    /// mail: the reply waits in Mail for the user to check and send.
+    #[serde(rename = "reply_mail")]
+    DraftReply { from: Option<String>, text: String },
 }
+
+/// The `app` of a [`Action::PressButton`] held on a web page.
+pub const BROWSER_APP: &str = "Browser";
 
 /// How careful Alfred must be before running an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,12 +73,39 @@ impl Action {
             Action::WebSearch { .. } => "web_search",
             Action::OpenUrl { .. } => "open_url",
             Action::GetTime => "get_time",
+            Action::RunShortcut { .. } => "run_shortcut",
+            Action::UseApp { .. } => "use_app",
+            Action::SendMessage { .. } => "send_message",
+            Action::PressButton { .. } => "press_button",
+            Action::UseBrowser { .. } | Action::UseTheirTab { .. } => "use_browser",
+            Action::ReadMail { .. } => "read_mail",
+            Action::DraftReply { .. } => "reply_mail",
         }
     }
 
+    /// Its words carry text someone else wrote: an email's body, or its sender and subject (named in a
+    /// reply's summary), an app's window or a web page (a search's answer is read off its results), or a
+    /// button's name read off one. The conversation history keeps a plain phrase instead, so the model never
+    /// reads that text as part of the conversation on a later turn.
+    pub fn reads_outside_text(&self) -> bool {
+        matches!(
+            self,
+            Action::WebSearch { .. }
+                | Action::ReadMail { .. }
+                | Action::DraftReply { .. }
+                | Action::UseApp { .. }
+                | Action::SendMessage { .. }
+                | Action::PressButton { .. }
+                | Action::UseBrowser { .. }
+                | Action::UseTheirTab { .. }
+        )
+    }
+
+    /// Shortcuts drive real devices and a small model can pick the wrong one, so running one confirms
+    /// unless the user named it (the agent decides that); a press is the irreversible click itself.
     pub fn risk(&self) -> Risk {
         match self {
-            Action::QuitApp { .. } => Risk::Confirm,
+            Action::QuitApp { .. } | Action::RunShortcut { .. } | Action::PressButton { .. } => Risk::Confirm,
             _ => Risk::Safe,
         }
     }
@@ -68,6 +120,18 @@ impl Action {
             Action::WebSearch { query, .. } => format!("Searching “{}”", clip(query, 28)),
             Action::OpenUrl { url, .. } => format!("Opening {}", host_of(url)),
             Action::GetTime => "Checking the time".into(),
+            Action::RunShortcut { name, .. } => format!("Running “{}”", clip(name, 32)),
+            Action::UseApp { app, .. } => format!("Using {app}"),
+            Action::SendMessage { app, to: Some(to), .. } => format!("Writing to {} in {app}", clip(to, 24)),
+            Action::SendMessage { app, to: None, .. } => format!("Writing in {app}"),
+            Action::PressButton { app, name, .. } => format!("Clicking “{}” in {}", clip(name, 24), place(app)),
+            Action::UseBrowser { url: Some(u), .. } => format!("Browsing {}", host_of(u)),
+            Action::UseBrowser { url: None, .. } => "Using the browser".into(),
+            Action::UseTheirTab { .. } => "Working on your page".into(),
+            Action::ReadMail { from: None } => "Reading your latest email".into(),
+            Action::ReadMail { from: Some(f) } => format!("Reading the latest email from {}", clip(f, 24)),
+            Action::DraftReply { from: None, .. } => "Drafting a reply".into(),
+            Action::DraftReply { from: Some(f), .. } => format!("Drafting a reply to {}", clip(f, 24)),
         }
     }
 
@@ -81,6 +145,17 @@ impl Action {
             Action::WebSearch { query, .. } => format!("Search “{}”", clip(query, 28)),
             Action::OpenUrl { url, .. } => format!("Open {}", host_of(url)),
             Action::GetTime => "Tell the time".into(),
+            Action::RunShortcut { name, .. } => format!("Run the shortcut “{}”", clip(name, 32)),
+            Action::UseApp { app, task } => format!("In {app}: {}", clip(task, 40)),
+            Action::SendMessage { app, text, .. } => format!("Message in {app}: {}", clip(text, 36)),
+            Action::PressButton { app, name, .. } => format!("Click “{}” in {}", clip(name, 32), place(app)),
+            Action::UseBrowser { task, url: Some(u) } => format!("On {}: {}", host_of(u), clip(task, 40)),
+            Action::UseBrowser { task, url: None } => format!("In the browser: {}", clip(task, 40)),
+            Action::UseTheirTab { task } => format!("On your page: {}", clip(task, 40)),
+            Action::ReadMail { from: None } => "Read the latest email".into(),
+            Action::ReadMail { from: Some(f) } => format!("Read the latest email from {}", clip(f, 28)),
+            Action::DraftReply { from: None, .. } => "Draft a reply to the latest email".into(),
+            Action::DraftReply { from: Some(f), .. } => format!("Draft a reply to {}", clip(f, 28)),
         }
     }
 
@@ -88,6 +163,8 @@ impl Action {
     pub fn confirm_question(&self) -> String {
         match self {
             Action::QuitApp { name } => format!("Shall I quit {name}?"),
+            Action::RunShortcut { name, .. } => format!("Shall I run the shortcut “{name}”?"),
+            Action::PressButton { app, name, .. } => format!("Shall I click “{name}” in {}?", place(app)),
             other => format!("Shall I go ahead: {}?", other.progress_label().to_lowercase()),
         }
     }
@@ -105,8 +182,21 @@ impl Action {
             Action::WebSearch { query, .. } => format!("Here are the results for “{query}”."),
             Action::OpenUrl { url, .. } => format!("I've opened {}.", host_of(url)),
             Action::GetTime => "Here is the time.".into(),
+            Action::RunShortcut { name, .. } => format!("I've run “{name}”."),
+            Action::UseApp { app, .. } => format!("Done in {app}."),
+            Action::SendMessage { app, .. } => format!("I've written your message in {app}."),
+            Action::PressButton { app, name, .. } => format!("I've clicked “{name}” in {}.", place(app)),
+            Action::UseBrowser { .. } => "Done in the browser.".into(),
+            Action::UseTheirTab { .. } => "Done on your page.".into(),
+            Action::ReadMail { .. } => "I've read you the latest email.".into(),
+            Action::DraftReply { .. } => "I've opened a reply in Mail for you to check and send.".into(),
         }
     }
+}
+
+/// Where a held click happens, in words: an app's name, or "the browser".
+fn place(app: &str) -> &str {
+    if app == BROWSER_APP { "the browser" } else { app }
 }
 
 /// "1 minute", "20 minutes", "1 hour", "2 hours 30 minutes".
@@ -139,23 +229,92 @@ fn clip(s: &str, max: usize) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub summary: String,
+    /// A risky step the action stopped before (an on-screen run reaching a Send button). The agent asks
+    /// about it like any confirm-level action.
+    pub follow_up: Option<Action>,
 }
 
 impl Outcome {
     pub fn new(summary: impl Into<String>) -> Self {
-        Self { summary: summary.into() }
+        Self { summary: summary.into(), follow_up: None }
+    }
+
+    pub fn with_follow_up(mut self, action: Action) -> Self {
+        self.follow_up = Some(action);
+        self
+    }
+}
+
+/// Operating apps on screen. `alfred-hands` implements it with `agent-desktop`; the executor delegates
+/// [`Action::UseApp`] and [`Action::PressButton`] to it.
+pub trait Hands: Send + Sync {
+    /// Work towards `task` in `app`, one observed step at a time. Stops before irreversible clicks and
+    /// returns them as the outcome's follow-up.
+    fn use_app(&self, app: &str, task: &str) -> Result<Outcome, String>;
+    /// Find the control by role and name in `app` and click it.
+    fn press(&self, app: &str, role: &str, name: &str) -> Result<Outcome, String>;
+    /// Write `text` in a chat app, to `to` or in the newest conversation, and stop before sending (the send
+    /// button comes back as the outcome's follow-up).
+    fn send_message(&self, app: &str, to: Option<&str>, text: &str) -> Result<Outcome, String> {
+        self.use_app(app, &message_task(to, text))
+    }
+    /// Whether the on-screen engine is allowed to work (macOS's Accessibility permission); `None` when it
+    /// can't tell.
+    fn allowed(&self) -> Option<bool> {
+        None
+    }
+}
+
+/// A message to write, as a task for the step-by-step loop.
+pub fn message_task(to: Option<&str>, text: &str) -> String {
+    match to {
+        Some(to) => format!("open the conversation with {to}, write this in the message box, and stop before sending: {text}"),
+        None => format!("open the newest conversation, write this in the message box, and stop before sending: {text}"),
+    }
+}
+
+/// Operating web pages. `alfred-hands` implements it with `agent-browser`; the executor delegates
+/// [`Action::UseBrowser`], and a [`Action::PressButton`] in [`BROWSER_APP`], to it.
+pub trait WebHands: Send + Sync {
+    /// Work towards `task` on the web, starting at `url` when given, else on the page already open. Stops
+    /// before irreversible clicks and returns them as the outcome's follow-up.
+    fn browse(&self, task: &str, url: Option<&str>) -> Result<Outcome, String>;
+    /// Find the control by role and name on the open page and click it.
+    fn press(&self, role: &str, name: &str) -> Result<Outcome, String>;
+    /// Search the web for `query`, leave the results open, and answer from them in a sentence or two. An
+    /// error means the results couldn't be read, so the caller opens them some other way.
+    fn answer(&self, query: &str) -> Result<Outcome, String>;
+    /// Open `url` in Alfred's tab and leave it there. An error means the caller opens it some other way.
+    fn show(&self, url: &str) -> Result<Outcome, String> {
+        Err(format!("I can't open {url} in my tab."))
+    }
+    /// Do `task` on the page the user is looking at, whose address is `url`: in their own tab when Alfred
+    /// works in their browser, else on the same page in Alfred's tab.
+    fn browse_theirs(&self, task: &str, url: &str) -> Result<Outcome, String> {
+        self.browse(task, Some(url))
+    }
+    /// The address Alfred's tab shows, once it has opened one.
+    fn page(&self) -> Option<String> {
+        None
     }
 }
 
 /// Performs actions. `alfred-mac` provides the real one; [`DryRun`] records instead.
 pub trait Executor: Send + Sync {
     fn execute(&self, action: &Action) -> Result<Outcome, String>;
+    /// What the user is looking at right now (the app they were in, their tab's site) and what Alfred's own
+    /// browser tab shows. Asked only when the model is about to decide.
+    fn context(&self) -> crate::context::Context {
+        crate::context::Context::default()
+    }
 }
 
 /// Records every action and pretends it worked. Used by tests, `alfred eval` and `--dry-run`.
 #[derive(Default)]
 pub struct DryRun {
     log: Mutex<Vec<Action>>,
+    context: crate::context::Context,
+    context_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl DryRun {
@@ -166,6 +325,17 @@ impl DryRun {
     /// Every action executed so far, in order.
     pub fn actions(&self) -> Vec<Action> {
         self.log.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    /// Pretend the user is looking at this.
+    pub fn with_context(mut self, context: crate::context::Context) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// How many times the context was asked for.
+    pub fn context_reads(&self) -> usize {
+        self.context_reads.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn clear(&self) {
@@ -184,6 +354,11 @@ impl Executor for DryRun {
             Action::GetTime => "It's 09:41 on Tuesday 24 November.".to_string(),
             other => other.done_phrase(),
         }))
+    }
+
+    fn context(&self) -> crate::context::Context {
+        self.context_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.context.clone()
     }
 }
 
@@ -210,6 +385,56 @@ mod tests {
             Action::OpenUrl { url: "https://www.youtube.com/watch?v=1".into(), browser: None }.progress_label(),
             "Opening youtube.com"
         );
+    }
+
+    #[test]
+    fn mail_actions_are_safe_and_reading_one_hides_its_text_from_history() {
+        let read = Action::ReadMail { from: Some("Ada".into()) };
+        let reply = Action::DraftReply { from: None, text: "See you at 3.".into() };
+        assert_eq!((read.risk(), reply.risk()), (Risk::Safe, Risk::Safe), "a draft is never sent");
+        assert_eq!(read.progress_label(), "Reading the latest email from Ada");
+        assert_eq!(reply.tool_name(), "reply_mail");
+        assert!(read.reads_outside_text() && reply.reads_outside_text(), "a reply's summary names the sender and subject");
+        assert_eq!(serde_json::to_value(&reply).unwrap()["text"], "See you at 3.");
+    }
+
+    #[test]
+    fn browser_tasks_are_safe_and_keep_page_text_out_of_history() {
+        let browse =
+            Action::UseBrowser { task: "find the price of a Kindle".into(), url: Some("https://www.amazon.com/s?k=kindle".into()) };
+        assert_eq!(browse.tool_name(), "use_browser");
+        assert_eq!(browse.risk(), Risk::Safe);
+        assert!(browse.reads_outside_text(), "page text is written by others");
+        assert_eq!(browse.progress_label(), "Browsing amazon.com");
+        assert_eq!(Action::UseBrowser { task: "x".into(), url: None }.progress_label(), "Using the browser");
+        assert_eq!(browse.short_label(), "On amazon.com: find the price of a Kindle");
+        assert_eq!(browse.done_phrase(), "Done in the browser.");
+        let v = serde_json::to_value(&browse).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"tool": "use_browser", "task": "find the price of a Kindle", "url": "https://www.amazon.com/s?k=kindle"})
+        );
+        assert_eq!(serde_json::from_value::<Action>(v).unwrap(), browse);
+    }
+
+    #[test]
+    fn a_search_answers_from_web_pages_so_its_words_stay_out_of_history() {
+        let search = Action::WebSearch { query: "weather in Paris".into(), browser: None };
+        assert_eq!(search.risk(), Risk::Safe);
+        assert!(search.reads_outside_text(), "the answer is read off the results page");
+        assert!(!Action::OpenUrl { url: "https://example.com".into(), browser: None }.reads_outside_text());
+        assert_eq!(search.done_phrase(), "Here are the results for “weather in Paris”.");
+    }
+
+    #[test]
+    fn a_click_held_in_the_browser_says_so_in_words() {
+        let press = Action::PressButton { app: BROWSER_APP.into(), role: "button".into(), name: "Place order".into() };
+        assert_eq!(press.risk(), Risk::Confirm);
+        assert_eq!(press.confirm_question(), "Shall I click “Place order” in the browser?");
+        assert_eq!(press.done_phrase(), "I've clicked “Place order” in the browser.");
+        assert_eq!(press.progress_label(), "Clicking “Place order” in the browser");
+        let mail = Action::PressButton { app: "Mail".into(), role: "button".into(), name: "Send".into() };
+        assert_eq!(mail.confirm_question(), "Shall I click “Send” in Mail?");
     }
 
     #[test]

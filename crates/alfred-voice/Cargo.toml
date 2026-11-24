@@ -1,12 +1,14 @@
 [package]
 name = "alfred-voice"
-description = "Alfred's on-device voice: Kokoro-82M speech (misaki-rs phonemes) and Moonshine dictation via sherpa-onnx."
+description = "Alfred's on-device voice: Kokoro-82M speech (misaki-rs phonemes), Moonshine dictation, Silero VAD and the \"Alfred\" wake word via sherpa-onnx, with cpal capture."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Microphone capture. Apache-2.0.
+cpal = "0.18.2"
 misaki-rs.workspace = true
 sherpa-onnx.workspace = true
 ureq.workspace = true

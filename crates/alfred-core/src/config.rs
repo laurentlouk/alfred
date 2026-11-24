@@ -12,6 +12,110 @@ pub struct Config {
     pub voice: VoiceConfig,
     pub ui: UiConfig,
     pub search: SearchConfig,
+    pub shortcuts: ShortcutsConfig,
+    pub desktop: DesktopConfig,
+    pub browser: BrowserConfig,
+    pub recording: RecordingConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordingConfig {
+    /// Keep what Alfred was asked, what its models saw and answered, and what each action did, in the
+    /// `recordings` folder beside this file, on this Mac only, to teach Alfred from its own runs later.
+    /// They include what is on screen when Alfred works in an app or on a page (messages, pages).
+    pub enabled: bool,
+    /// Recording stops when the folder reaches this size, in megabytes.
+    pub max_mb: u64,
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self { enabled: false, max_mb: 500 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShortcutsConfig {
+    /// Offer the user's Shortcuts as actions.
+    pub enabled: bool,
+    /// Shortcut names that run without asking even when the model picked them. A shortcut you name
+    /// yourself ("run Bonjour") never asks.
+    pub trusted: Vec<String>,
+}
+
+impl Default for ShortcutsConfig {
+    fn default() -> Self {
+        Self { enabled: true, trusted: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopConfig {
+    /// Operate apps on screen through `agent-desktop` when it is installed.
+    pub enabled: bool,
+    /// The model that drives on-screen steps. Measured in live Mail runs: qwen3:4b reads an app but loses
+    /// its place in multi-step tasks; qwen3:8b plans and follows menu commands.
+    pub model: String,
+    /// The most steps one request may take.
+    pub max_steps: u32,
+    /// The `agent-desktop` program: a name looked up on PATH and in Homebrew's folders, or a full path.
+    pub command: String,
+}
+
+impl Default for DesktopConfig {
+    fn default() -> Self {
+        Self { enabled: true, model: "qwen3:8b".into(), max_steps: 8, command: "agent-desktop".into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserConfig {
+    /// Do tasks on websites through `agent-browser` when it is installed. The steps are decided by the
+    /// model in `[desktop] model`, which needs structured output.
+    pub enabled: bool,
+    /// The `agent-browser` program: a name looked up on PATH and in Homebrew's folders, or a full path.
+    pub command: String,
+    /// The browser's own profile folder, so its sign-ins survive between runs. Never one of the user's
+    /// Chrome profiles. A leading `~/` is the home folder.
+    pub profile: String,
+    /// Show the browser window, so the user can watch and step in for a CAPTCHA or a sign-in code.
+    pub headed: bool,
+    /// Work in the user's own running Chrome, where they are signed in, instead of Alfred's window: in a
+    /// tab of Alfred's own, never the user's tabs. Chrome lets Alfred in once remote debugging is on at
+    /// `chrome://inspect/#remote-debugging`, and asks the user to allow it. `profile` and `headed` are
+    /// then unused.
+    pub use_chrome: bool,
+    /// The most steps one request may take.
+    pub max_steps: u32,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            command: "agent-browser".into(),
+            profile: home_dir().join("browser").display().to_string(),
+            headed: true,
+            use_chrome: false,
+            max_steps: 10,
+        }
+    }
+}
+
+impl BrowserConfig {
+    /// The profile folder as a path, with `~/` expanded.
+    pub fn profile_dir(&self) -> PathBuf {
+        let p = self.profile.trim();
+        match p.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(rest),
+            None if p.is_empty() => home_dir().join("browser"),
+            None => PathBuf::from(p),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +140,20 @@ pub enum ToolMode {
     Native,
 }
 
+/// When the model thinks before answering (a model that can't think just answers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Thinking {
+    /// Only for questions that need it: the model flags them while deciding, and clear signs in the words
+    /// (a sum, "step by step", "compare") count too. Actions such as opening an app never think.
+    #[default]
+    Auto,
+    /// Never: every answer comes from the quick decision.
+    Never,
+    /// Every answer in words thinks first.
+    Always,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
@@ -48,8 +166,23 @@ pub struct LlmConfig {
     /// Read from the environment variable named here, never stored in the file.
     pub api_key_env: String,
     pub timeout_secs: u64,
+    /// The context window asked of the model, in tokens.
+    pub context_tokens: u32,
+    /// The most tokens one model reply may use: enough for a decision, never a runaway.
+    pub max_reply_tokens: u32,
     /// Earlier turns sent back to the model for context.
     pub history_turns: usize,
+    /// When the model thinks before answering in words.
+    pub thinking: Thinking,
+    /// The most tokens a thinking answer may use, thoughts included.
+    pub think_tokens: u32,
+    /// Another model on the same server that thinks hard questions through, such as a small one that thinks
+    /// fast while a larger `model` decides. Unset, `model` does both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub think_model: Option<String>,
+    /// How long Ollama keeps a model loaded after its last use ("4h", "30m", "-1" for as long as Ollama
+    /// runs). Loading a large model again takes seconds: 11 s for a 21 GB one.
+    pub keep_alive: String,
 }
 
 impl Default for LlmConfig {
@@ -61,12 +194,23 @@ impl Default for LlmConfig {
             model: "qwen3:0.6b".into(),
             api_key_env: "ALFRED_API_KEY".into(),
             timeout_secs: 60,
+            context_tokens: 8192,
+            max_reply_tokens: 256,
             history_turns: 3,
+            thinking: Thinking::Auto,
+            think_tokens: 2048,
+            think_model: None,
+            keep_alive: "4h".into(),
         }
     }
 }
 
 impl LlmConfig {
+    /// The same server and settings with another model (the one that drives on-screen steps).
+    pub fn with_model(&self, model: &str) -> Self {
+        Self { model: model.to_string(), ..self.clone() }
+    }
+
     pub fn api_key(&self) -> Option<String> {
         std::env::var(&self.api_key_env).ok().filter(|k| !k.trim().is_empty())
     }
@@ -80,15 +224,30 @@ pub struct VoiceConfig {
     /// A Kokoro v1.0 voice: `bm_george` (British, male) suits a butler; `af_heart`, `bf_emma`, `am_michael`…
     pub voice: String,
     pub speed: f32,
-    /// Seconds of quiet that end dictation.
+    /// Seconds of quiet that end dictation when what was said doesn't sound finished ("open Notes and…");
+    /// a finished sentence ends sooner.
     pub silence_secs: f32,
     /// Longest dictation, in seconds.
     pub max_listen_secs: f32,
+    /// Keep the microphone open and listen for "Alfred", like "Hey Siri". The microphone indicator stays
+    /// on while it does; everything is heard on the Mac and nothing is kept until "Alfred" is said.
+    pub wake_word: bool,
+    /// After a spoken exchange, how long Alfred keeps listening for what you say next without "Alfred"
+    /// before it, in seconds; each exchange starts it again, and "Alfred, stop" ends it. 0 turns it off.
+    pub follow_up_secs: f32,
 }
 
 impl Default for VoiceConfig {
     fn default() -> Self {
-        Self { speak: true, voice: "bm_george".into(), speed: 1.05, silence_secs: 1.4, max_listen_secs: 20.0 }
+        Self {
+            speak: true,
+            voice: "bm_george".into(),
+            speed: 1.05,
+            silence_secs: 1.2,
+            max_listen_secs: 20.0,
+            wake_word: false,
+            follow_up_secs: 30.0,
+        }
     }
 }
 
@@ -97,13 +256,14 @@ impl Default for VoiceConfig {
 pub struct UiConfig {
     /// The global shortcut that summons Alfred, in Rune's accelerator syntax.
     pub shortcut: String,
-    /// Hide the panel when it loses focus (another app comes forward).
+    /// Hide the panel when another app comes forward. Off by default: the panel then waits behind that
+    /// app's windows like any app's, and ⌘Tab or the Dock icon brings it back.
     pub hide_on_blur: bool,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { shortcut: "ctrl+alt+space".into(), hide_on_blur: true }
+        Self { shortcut: "ctrl+shift+space".into(), hide_on_blur: false }
     }
 }
 
@@ -166,9 +326,9 @@ pub fn models_dir() -> PathBuf {
     home_dir().join("models")
 }
 
-/// Scratch audio (dictation, synthesized speech). Cleared by the OS eventually; nothing important lives here.
-pub fn cache_dir() -> PathBuf {
-    home_dir().join("cache")
+/// Where recordings are kept, when the user turns them on (see [`crate::record`]).
+pub fn recordings_dir() -> PathBuf {
+    home_dir().join("recordings")
 }
 
 #[cfg(test)]
@@ -181,7 +341,26 @@ mod tests {
         assert_eq!(c.llm.provider, Provider::Ollama);
         assert_eq!(c.llm.model, "qwen3:0.6b");
         assert_eq!(c.voice.voice, "bm_george");
-        assert_eq!(c.ui.shortcut, "ctrl+alt+space");
+        assert_eq!(c.ui.shortcut, "ctrl+shift+space");
+        assert!(c.shortcuts.enabled && c.shortcuts.trusted.is_empty());
+        assert_eq!(c.desktop.model, "qwen3:8b");
+        assert_eq!(c.llm.with_model("qwen3:4b").base_url, c.llm.base_url);
+    }
+
+    #[test]
+    fn the_browser_is_on_headed_with_its_own_profile_under_alfreds_folder() {
+        let b = Config::default().browser;
+        assert!(b.enabled && b.headed);
+        assert_eq!((b.command.as_str(), b.max_steps), ("agent-browser", 10));
+        assert_eq!(b.profile_dir(), home_dir().join("browser"));
+        let c: Config = toml::from_str("[browser]\nprofile = \"~/Browsers/alfred\"\nheaded = false\n").unwrap();
+        assert!(!c.browser.headed && c.browser.enabled);
+        assert!(c.browser.profile_dir().ends_with("Browsers/alfred") && !c.browser.profile_dir().starts_with("~"));
+        let blank = BrowserConfig { profile: " ".into(), ..BrowserConfig::default() };
+        assert_eq!(blank.profile_dir(), home_dir().join("browser"));
+        assert!(!b.use_chrome, "the user's own Chrome only when they ask");
+        let mine: Config = toml::from_str("[browser]\nuse_chrome = true\n").unwrap();
+        assert!(mine.browser.use_chrome);
     }
 
     #[test]
@@ -191,6 +370,35 @@ mod tests {
         assert_eq!(c.llm.base_url, "http://127.0.0.1:11434");
         assert_eq!(c.search.engine, "duckduckgo");
         assert!(c.voice.speak);
+    }
+
+    #[test]
+    fn recording_is_off_unless_the_user_turns_it_on() {
+        let c = Config::default();
+        assert!(!c.recording.enabled, "what is on screen is kept only when the user says so");
+        assert_eq!(c.recording.max_mb, 500);
+        let on: Config = toml::from_str("[recording]\nenabled = true\n").unwrap();
+        assert!(on.recording.enabled && on.recording.max_mb == 500);
+        assert!(recordings_dir().ends_with("recordings"));
+    }
+
+    #[test]
+    fn models_stay_loaded_for_hours_by_default() {
+        assert_eq!(Config::default().llm.keep_alive, "4h", "a 21 GB model takes 11 s to load again");
+        let c: Config = toml::from_str("[llm]\nkeep_alive = \"-1\"\n").unwrap();
+        assert_eq!(c.llm.keep_alive, "-1");
+    }
+
+    #[test]
+    fn a_thinking_model_is_optional() {
+        assert_eq!(Config::default().llm.think_model, None);
+        assert!(!toml::to_string(&Config::default()).unwrap().contains("think_model"), "unset, it stays out of the file");
+        let c: Config = toml::from_str("[llm]\nmodel = \"gemma4:26b\"\nthink_model = \"gemma4:e4b\"\n").unwrap();
+        assert_eq!(c.llm.think_model.as_deref(), Some("gemma4:e4b"));
+        let thinker = crate::llm::thinker_from_config(&c.llm).expect("a separate thinker");
+        assert!(thinker.describe().contains("gemma4:e4b"), "{}", thinker.describe());
+        let same = toml::from_str::<Config>("[llm]\nmodel = \"gemma4:e4b\"\nthink_model = \"gemma4:e4b\"\n").unwrap();
+        assert!(crate::llm::thinker_from_config(&same.llm).is_none(), "the same model needs no second one");
     }
 
     #[test]

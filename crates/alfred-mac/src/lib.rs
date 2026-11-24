@@ -1,18 +1,26 @@
-//! Alfred's hands on a Mac: `open` for apps and links, `osascript` for Notes, Reminders and quitting.
+//! Alfred's hands on a Mac: `open` for apps and links, `osascript` for Notes, Reminders, Mail and quitting.
 //!
 //! User text never becomes AppleScript source. Every script here is a constant that reads its inputs from
 //! `on run argv`, and the inputs travel as separate process arguments, so a note body such as
 //! `" & do shell script "…` is just text.
 
+pub mod focus;
+pub mod mail;
+pub mod permissions;
+pub mod shortcuts;
+
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use alfred_core::action::{BROWSER_APP, WebHands};
 use alfred_core::normalize::search_url;
-use alfred_core::{Action, Executor, Outcome};
+use alfred_core::{Action, Executor, Hands, Outcome};
 
 /// Runs actions for real on this Mac.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MacExecutor {
     /// `google`, `duckduckgo` or `bing`.
     pub search_engine: String,
@@ -22,11 +30,32 @@ pub struct MacExecutor {
     pub timeout: Duration,
     /// Bring Notes forward to show a note it just saved.
     pub show_notes: bool,
+    /// How long a shortcut may run (one that asks for input waits until this runs out).
+    pub shortcut_timeout: Duration,
+    /// The on-screen engine for `use_app` and `press_button`, when `agent-desktop` is set up.
+    pub hands: Option<Arc<dyn Hands>>,
+    /// The browser engine for `use_browser`, its held clicks, and answering searches, when `agent-browser`
+    /// is set up.
+    pub web: Option<Arc<dyn WebHands>>,
+    /// Check the Accessibility permission before on-screen actions, and ask for it when it's missing.
+    pub check_accessibility: bool,
+    /// macOS's own permission dialog was shown already: the next time, System Settings opens instead.
+    asked_accessibility: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for MacExecutor {
     fn default() -> Self {
-        Self { search_engine: "google".into(), browser: None, timeout: Duration::from_secs(60), show_notes: true }
+        Self {
+            search_engine: "google".into(),
+            browser: None,
+            timeout: Duration::from_secs(60),
+            show_notes: true,
+            shortcut_timeout: Duration::from_secs(120),
+            hands: None,
+            web: None,
+            check_accessibility: false,
+            asked_accessibility: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
     }
 }
 
@@ -35,8 +64,39 @@ impl MacExecutor {
         Self {
             search_engine: c.search.engine.clone(),
             browser: Some(c.search.browser.trim().to_string()).filter(|b| !b.is_empty()),
+            check_accessibility: true,
             ..Self::default()
         }
+    }
+
+    pub fn with_hands(mut self, hands: Arc<dyn Hands>) -> Self {
+        self.hands = Some(hands);
+        self
+    }
+
+    pub fn with_web_hands(mut self, web: Arc<dyn WebHands>) -> Self {
+        self.web = Some(web);
+        self
+    }
+
+    fn web(&self) -> Result<&Arc<dyn WebHands>, String> {
+        self.web.as_ref().ok_or_else(|| {
+            "Doing things on websites needs agent-browser: `brew install agent-browser` (it uses Google Chrome).".to_string()
+        })
+    }
+
+    fn hands(&self) -> Result<&Arc<dyn Hands>, String> {
+        let hands = self.hands.as_ref().ok_or_else(|| {
+            "Operating apps on screen needs agent-desktop: `brew install agent-desktop`, then allow Alfred in System Settings → Privacy & Security → Accessibility.".to_string()
+        })?;
+        // Without Accessibility every on-screen step fails: ask for it, the way any Mac app does. The engine's
+        // own view comes first (it is what fails), macOS's answer to Alfred when it can't tell.
+        if self.check_accessibility && hands.allowed().or_else(permissions::accessibility_allowed) == Some(false) {
+            let asked_before = self.asked_accessibility.swap(true, std::sync::atomic::Ordering::SeqCst);
+            permissions::ask_for_accessibility(asked_before);
+            return Err(if asked_before { permissions::STILL_MISSING } else { permissions::ASKED }.to_string());
+        }
+        Ok(hands)
     }
 
     fn open_in_browser(&self, url: &str, browser: Option<&str>) -> Result<(), String> {
@@ -106,6 +166,15 @@ impl Executor for MacExecutor {
                 Ok(Outcome::new(action.done_phrase()))
             }
             Action::WebSearch { query, browser } => {
+                // Alfred's own browser reads the results and answers, unless the request named a browser. When
+                // it can't read them (a robot check with its window hidden, a broken install), the results open
+                // as before.
+                if browser.is_none()
+                    && let Some(web) = &self.web
+                    && let Ok(answer) = web.answer(query)
+                {
+                    return Ok(answer);
+                }
                 self.open_in_browser(&search_url(&self.search_engine, query), browser.as_deref())?;
                 Ok(Outcome::new(action.done_phrase()))
             }
@@ -114,9 +183,45 @@ impl Executor for MacExecutor {
                 if alfred_core::normalize::url(url).as_deref() != Some(url.as_str()) {
                     return Err(format!("{url} is not a web address I can open."));
                 }
+                // The site opens in Alfred's browser, where follow-ups ("what do you see?") can look at it and
+                // the user's sign-ins there are kept. A browser the user named still gets it.
+                if browser.is_none()
+                    && let Some(web) = &self.web
+                    && let Ok(shown) = web.show(url)
+                {
+                    return Ok(shown);
+                }
                 self.open_in_browser(url, browser.as_deref())?;
                 Ok(Outcome::new(action.done_phrase()))
             }
+            Action::RunShortcut { name, input } => {
+                let output = shortcuts::run(name, input.as_deref(), self.shortcut_timeout)?;
+                let said = output.trim();
+                Ok(Outcome::new(if said.is_empty() { action.done_phrase() } else { clip(said, 400) }))
+            }
+            // A browser is driven through its pages, with agent-browser, never through its window: a task
+            // "in Chrome" works on the tab it shows.
+            Action::UseApp { app, task } if focus::is_browser(app) && self.web.is_some() => {
+                let url = focus::tab_url(app, focus::TIMEOUT)
+                    .ok_or_else(|| format!("I can't see a web page in {app}; Alfred may need permission to read it (System Settings → Privacy & Security → Automation)."))?;
+                self.web()?.browse_theirs(task, &url)
+            }
+            Action::UseApp { app, task } => self.hands()?.use_app(app, task),
+            Action::SendMessage { app, to, text } => self.hands()?.send_message(app, to.as_deref(), text),
+            Action::PressButton { app, role, name } if app == BROWSER_APP => self.web()?.press(role, name),
+            Action::PressButton { app, role, name } => self.hands()?.press(app, role, name),
+            Action::UseBrowser { task, url } => self.web()?.browse(task, url.as_deref()),
+            Action::UseTheirTab { task } => {
+                let web = self.web()?;
+                // The browser most recently in front: the user may ask from another app, or from Alfred.
+                let app =
+                    focus::front_browser(focus::TIMEOUT).ok_or("I don't see a browser window open; open the page and ask me again.")?;
+                let url = focus::tab_url(&app, focus::TIMEOUT)
+                    .ok_or_else(|| format!("I can't see a web page in {app}; Alfred may need permission to read it (System Settings → Privacy & Security → Automation)."))?;
+                web.browse_theirs(task, &url)
+            }
+            Action::ReadMail { from } => mail::read(from.as_deref(), self.timeout),
+            Action::DraftReply { from, text } => mail::reply(from.as_deref(), text, self.timeout),
             Action::GetTime => {
                 let mut cmd = Command::new("date");
                 cmd.arg("+%H:%M on %A %-d %B");
@@ -124,6 +229,35 @@ impl Executor for MacExecutor {
             }
         }
     }
+
+    fn context(&self) -> alfred_core::context::Context {
+        let app = focus::front_app(focus::TIMEOUT);
+        let site = app.as_deref().filter(|a| focus::is_browser(a)).and_then(|a| focus::tab_url(a, focus::TIMEOUT));
+        let alfred_site = self.web.as_ref().and_then(|w| w.page());
+        alfred_core::context::Context::new(app.as_deref(), site.as_deref(), alfred_site.as_deref())
+    }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max { s.to_string() } else { s.chars().take(max - 1).collect::<String>() + "…" }
+}
+
+/// Where a program lives: a full path as given, else the first match on PATH or in the folders Homebrew,
+/// npm and friends install to. An app opened from Finder gets a minimal PATH, so these are searched too.
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    if name.contains('/') {
+        let p = PathBuf::from(name);
+        return p.is_file().then_some(p);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    dirs.extend(
+        ["/opt/homebrew/bin", "/usr/local/bin"]
+            .map(PathBuf::from)
+            .into_iter()
+            .chain([".local/bin", ".bun/bin", ".npm-global/bin"].map(|d| home.join(d))),
+    );
+    dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
 }
 
 /// The note as Notes stores it: a heading (its title) and the text, HTML-escaped, one `<div>` per line.
@@ -178,7 +312,7 @@ fn explain_applescript_error(e: &str) -> String {
 }
 
 /// Run a command with a timeout; Ok(stdout) on success, Err(stderr or a description) otherwise.
-fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
+pub fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
     let program = cmd.get_program().to_string_lossy().into_owned();
     let mut child = cmd
         .stdin(Stdio::null())
@@ -186,6 +320,21 @@ fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("couldn't start {program}: {e}"))?;
+    // Read while it runs, so a chatty command can't block on a full pipe.
+    let out_reader = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            s.read_to_string(&mut text).ok();
+            text
+        })
+    });
+    let err_reader = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            s.read_to_string(&mut text).ok();
+            text
+        })
+    });
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -199,14 +348,8 @@ fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
             Err(e) => return Err(format!("{program}: {e}")),
         }
     };
-    let mut out = String::new();
-    let mut err = String::new();
-    if let Some(mut s) = child.stdout.take() {
-        s.read_to_string(&mut out).ok();
-    }
-    if let Some(mut s) = child.stderr.take() {
-        s.read_to_string(&mut err).ok();
-    }
+    let out = out_reader.and_then(|r| r.join().ok()).unwrap_or_default();
+    let err = err_reader.and_then(|r| r.join().ok()).unwrap_or_default();
     if status.success() { Ok(out) } else { Err(if err.trim().is_empty() { format!("{program} failed ({status})") } else { err }) }
 }
 
@@ -269,6 +412,95 @@ mod tests {
         }
         let o = MacExecutor::default().execute(&Action::GetTime).unwrap();
         assert!(o.summary.starts_with("It's ") && o.summary.contains(" on "), "{}", o.summary);
+    }
+
+    #[test]
+    fn on_screen_actions_explain_how_to_set_them_up() {
+        let e = MacExecutor::default().execute(&Action::UseApp { app: "Mail".into(), task: "x".into() }).unwrap_err();
+        assert!(e.contains("brew install agent-desktop") && e.contains("Accessibility"), "{e}");
+    }
+
+    /// Browser hands that record what they were asked and answer from a script.
+    #[derive(Default)]
+    struct FakeWeb {
+        asked: std::sync::Mutex<Vec<String>>,
+        answer: Option<String>,
+    }
+
+    impl WebHands for FakeWeb {
+        fn browse(&self, task: &str, url: Option<&str>) -> Result<Outcome, String> {
+            self.asked.lock().unwrap().push(format!("browse {task} {url:?}"));
+            Ok(Outcome::new("browsed"))
+        }
+
+        fn press(&self, role: &str, name: &str) -> Result<Outcome, String> {
+            self.asked.lock().unwrap().push(format!("press {role} {name}"));
+            Ok(Outcome::new("pressed"))
+        }
+
+        fn answer(&self, query: &str) -> Result<Outcome, String> {
+            self.asked.lock().unwrap().push(format!("answer {query}"));
+            self.answer.clone().map(Outcome::new).ok_or_else(|| "robot check".to_string())
+        }
+    }
+
+    /// An executor whose own browser can't be found, so a fallback to it fails instead of opening a window.
+    fn with_web(web: Arc<FakeWeb>) -> MacExecutor {
+        MacExecutor { browser: Some("Definitely Not A Browser 7f3a".into()), ..MacExecutor::default() }.with_web_hands(web)
+    }
+
+    #[test]
+    fn browser_tasks_and_their_held_clicks_go_to_the_browser_hands() {
+        let web = Arc::new(FakeWeb::default());
+        let exec = with_web(web.clone());
+        let task = Action::UseBrowser { task: "find the price".into(), url: Some("https://example.com".into()) };
+        assert_eq!(exec.execute(&task).unwrap().summary, "browsed");
+        let press = Action::PressButton { app: BROWSER_APP.into(), role: "button".into(), name: "Place order".into() };
+        assert_eq!(exec.execute(&press).unwrap().summary, "pressed");
+        assert_eq!(*web.asked.lock().unwrap(), ["browse find the price Some(\"https://example.com\")", "press button Place order"]);
+        let e = exec.execute(&Action::PressButton { app: "Mail".into(), role: "button".into(), name: "Send".into() }).unwrap_err();
+        assert!(e.contains("agent-desktop"), "a held click in an app still goes to the app hands: {e}");
+    }
+
+    #[test]
+    fn without_agent_browser_browser_tasks_say_how_to_install_it() {
+        let e = MacExecutor::default().execute(&Action::UseBrowser { task: "x".into(), url: None }).unwrap_err();
+        assert!(e.contains("brew install agent-browser"), "{e}");
+    }
+
+    #[test]
+    fn searches_are_answered_by_the_browser_hands() {
+        let web =
+            Arc::new(FakeWeb { answer: Some("It's 12°C in Paris, according to Google's weather card.".into()), ..FakeWeb::default() });
+        let o = with_web(web.clone()).execute(&Action::WebSearch { query: "weather in Paris".into(), browser: None }).unwrap();
+        assert_eq!(o.summary, "It's 12°C in Paris, according to Google's weather card.");
+        assert_eq!(*web.asked.lock().unwrap(), ["answer weather in Paris"]);
+    }
+
+    #[test]
+    fn a_search_falls_back_to_opening_the_results_when_they_cant_be_read() {
+        // The fallback opens the results in the configured browser, which doesn't exist here: the error
+        // shows the old path ran.
+        let web = Arc::new(FakeWeb::default());
+        let e = with_web(web.clone()).execute(&Action::WebSearch { query: "weather in Paris".into(), browser: None }).unwrap_err();
+        assert!(e.contains("Definitely Not A Browser 7f3a") || e.contains("Unable to find"), "{e}");
+        assert_eq!(*web.asked.lock().unwrap(), ["answer weather in Paris"]);
+        // A browser the user named is used as before, without the hands.
+        let web = Arc::new(FakeWeb { answer: Some("x".into()), ..FakeWeb::default() });
+        let named = Action::WebSearch { query: "rune".into(), browser: Some("Definitely Not A Browser 7f3a".into()) };
+        assert!(with_web(web.clone()).execute(&named).is_err());
+        assert!(web.asked.lock().unwrap().is_empty());
+        // No hands at all: today's behaviour, the results open in the browser.
+        let plain = MacExecutor { browser: Some("Definitely Not A Browser 7f3a".into()), ..MacExecutor::default() };
+        assert!(plain.execute(&Action::WebSearch { query: "rune".into(), browser: None }).is_err());
+    }
+
+    #[test]
+    fn programs_are_found_by_name_or_path() {
+        assert_eq!(find_program("/bin/ls"), Some(PathBuf::from("/bin/ls")));
+        assert!(find_program("ls").is_some());
+        assert_eq!(find_program("definitely-not-a-program-7f3a"), None);
+        assert_eq!(find_program("/nope/agent-desktop"), None);
     }
 
     #[test]

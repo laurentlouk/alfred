@@ -2,11 +2,11 @@
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use alfred_core::config::{self, Config, Provider};
 use alfred_core::llm::{self, Ollama};
 use alfred_core::{Agent, DryRun, Event, Executor};
-use alfred_mac::MacExecutor;
 use alfred_voice::{Listener, Speaker, models};
 
 use crate::speech::{self, Playback};
@@ -14,16 +14,22 @@ use crate::speech::{self, Playback};
 const HELP: &str = "Alfred, a local assistant for your Mac.
 
 USAGE
-  alfred                      open Alfred (summon it any time with the shortcut, ctrl+alt+space by default)
+  alfred                      open Alfred (summon it any time with the shortcut, ctrl+shift+space by default)
   alfred ask [options] TEXT   do what TEXT asks and print the answer
       --dry-run                 show the actions instead of running them
-      --yes                     answer yes when Alfred asks to confirm
+      --yes                     answer yes when Alfred asks to confirm (including a Send it stopped before)
       --speak                   also say the answer out loud
+  alfred chat [--dry-run]     a conversation: one request per line (typed, or piped in), each knowing
+                              the ones before it and what Alfred's browser shows
   alfred say TEXT             speak TEXT with Alfred's voice
   alfred listen FILE.wav      transcribe a recording
   alfred setup                write the config, download the voice models, pull the language model
   alfred doctor               check what is ready and what is missing
+  alfred shortcuts            list the Shortcuts Alfred can run
+  alfred recordings [clear]   what Alfred has recorded of its own runs (when you turn recording on), or
+                              delete it all (clear asks first; --yes skips the question)
   alfred eval [--model] [FILE]  score the router (and with --model, the language model) on a fixture
+                              (eval/utterances.toml by default; eval/apps.toml covers shortcuts and apps)
 
 FILES
   config  ~/Library/Application Support/Alfred/config.toml   (ALFRED_HOME overrides the folder)
@@ -36,11 +42,14 @@ pub fn run(args: &[String]) -> i32 {
     let rest: Vec<String> = args[1..].to_vec();
     let result = match args[0].as_str() {
         "ask" => ask(&rest),
+        "chat" => chat(&rest),
         "say" => say(&rest.join(" ")),
         "listen" => listen(&rest),
         "setup" => setup(),
         "doctor" => doctor(),
         "eval" => eval(&rest),
+        "shortcuts" => list_shortcuts(),
+        "recordings" => recordings(&rest),
         "version" | "--version" => {
             println!("alfred {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -70,13 +79,14 @@ fn ask(args: &[String]) -> Result<(), String> {
         return Err("say what to do, for example: alfred ask \"open Notes\"".into());
     }
     let cfg = load_config()?;
-    let mut agent =
-        Agent::new(Some(llm::from_config(&cfg.llm))).with_history_turns(cfg.llm.history_turns).with_tool_mode(cfg.llm.tool_mode);
-    let dry = DryRun::new();
-    let mac = MacExecutor::from_config(&cfg);
+    // A dry run is never recorded: it does nothing, so there is no outcome to learn from.
+    let (mut agent, mac) = crate::wiring::build_for(&cfg, !flag("--dry-run"));
+    // A dry run acts on nothing, but sees where the user is, so it decides as the real run would.
+    let dry = DryRun::new().with_context(mac.context());
     let exec: &dyn Executor = if flag("--dry-run") { &dry } else { &mac };
     let mut show = |e: Event| match e {
         Event::Thinking => eprintln!("… thinking with {}", agent_label(&cfg)),
+        Event::Reasoning => eprintln!("… thinking it through"),
         Event::Acting(a) => eprintln!("→ {}", a.progress_label()),
         Event::Acted(d) => match &d.result {
             Ok(_) => eprintln!("✓ {}", d.action.tool_name()),
@@ -101,8 +111,57 @@ fn ask(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// A conversation on the terminal: each line is a request to the same agent, so follow-ups ("what do you
+/// see there?") know what came before. Confirmations are asked on the terminal, or refused when piped.
+fn chat(args: &[String]) -> Result<(), String> {
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+    let cfg = load_config()?;
+    let (mut agent, mac) = crate::wiring::build_for(&cfg, !dry_run);
+    // A dry run acts on nothing, but sees where the user is, so it decides as the real run would.
+    let dry = DryRun::new().with_context(mac.context());
+    let exec: &dyn Executor = if dry_run { &dry } else { &mac };
+    let mut show = |e: Event| match e {
+        Event::Thinking => eprintln!("… thinking"),
+        Event::Reasoning => eprintln!("… thinking it through"),
+        Event::Acting(a) => eprintln!("→ {}", a.progress_label()),
+        Event::Acted(d) => match &d.result {
+            Ok(_) => eprintln!("✓ {}", d.action.tool_name()),
+            Err(e) => eprintln!("✗ {}: {e}", d.action.tool_name()),
+        },
+    };
+    let interactive = std::io::stdin().is_terminal();
+    for line in std::io::stdin().lock().lines() {
+        let text = line.map_err(|e| e.to_string())?;
+        if text.trim().is_empty() {
+            continue;
+        }
+        if !interactive {
+            println!("you: {}", text.trim());
+        }
+        let mut turn = agent.handle(text.trim(), exec, &mut show);
+        if turn.pending.is_some() {
+            println!("alfred: {}", turn.reply);
+            let yes = interactive && confirm_on_terminal();
+            turn = agent.answer_confirmation(yes, exec, &mut show);
+        }
+        println!("alfred: {}", turn.reply);
+    }
+    Ok(())
+}
+
+/// Chrome is running with remote debugging on: it writes the port it listens on into its profile folder.
+fn chrome_lets_alfred_in() -> bool {
+    std::env::var_os("HOME")
+        .map(|h| std::path::Path::new(&h).join("Library/Application Support/Google/Chrome/DevToolsActivePort").is_file())
+        .unwrap_or(false)
+}
+
 fn agent_label(cfg: &Config) -> String {
-    format!("{} ({})", cfg.llm.model, if cfg.llm.provider == Provider::Ollama { "Ollama" } else { "OpenAI-compatible" })
+    let server = if cfg.llm.provider == Provider::Ollama { "Ollama" } else { "OpenAI-compatible" };
+    match cfg.llm.think_model.as_deref().filter(|m| !m.trim().is_empty() && *m != cfg.llm.model) {
+        Some(thinker) => format!("{} ({server}; hard questions: {thinker})", cfg.llm.model),
+        None => format!("{} ({server})", cfg.llm.model),
+    }
 }
 
 fn confirm_on_terminal() -> bool {
@@ -126,7 +185,7 @@ fn say(text: &str) -> Result<(), String> {
         }
     };
     let playback = Playback::new();
-    speech::speak(speaker.as_ref(), text, &config::cache_dir(), &playback, |_, _| {})
+    speech::speak(speaker.as_ref(), text, &playback, |_, _| {})
 }
 
 fn listen(args: &[String]) -> Result<(), String> {
@@ -220,22 +279,173 @@ fn doctor() -> Result<(), String> {
                     list.iter().any(|m| same_model(m, &cfg.llm.model)),
                     format!("model {} (ollama pull {})", cfg.llm.model, cfg.llm.model),
                 );
+                if let Some(thinker) = cfg.llm.think_model.as_deref().filter(|m| !m.trim().is_empty() && *m != cfg.llm.model) {
+                    line(list.iter().any(|m| same_model(m, thinker)), format!("thinking model {thinker} (ollama pull {thinker})"));
+                }
             }
             Err(e) => line(false, format!("Ollama: {e}")),
         },
         Provider::OpenAi => println!("· OpenAI-compatible server at {} (not checked)", cfg.llm.base_url),
     }
+    let shortcut_count =
+        alfred_mac::find_program("shortcuts").map(|_| alfred_mac::shortcuts::list(Duration::from_secs(15)).map(|l| l.len()));
+    match shortcut_count {
+        Some(Ok(n)) => println!("· {n} shortcuts available (`alfred shortcuts` lists them)"),
+        Some(Err(e)) => line(false, format!("shortcuts: {e}")),
+        None => println!("· the shortcuts command isn't available on this Mac"),
+    }
+    match alfred_mac::find_program(&cfg.desktop.command) {
+        Some(program) => {
+            let status = alfred_hands::desktop::Desktop::call(
+                &alfred_hands::desktop::AgentDesktop::new(program.clone()),
+                &["status".to_string()],
+                None,
+            );
+            let access = status
+                .as_ref()
+                .ok()
+                .and_then(|s| s["permissions"]["accessibility"]["state"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "unknown".into());
+            line(true, format!("agent-desktop at {}", program.display()));
+            line(
+                access == "granted",
+                format!(
+                    "Accessibility for on-screen actions: {access} (System Settings → Privacy & Security → Accessibility: allow Alfred, or the terminal running it)"
+                ),
+            );
+            if cfg.llm.provider == Provider::Ollama
+                && let Ok(list) = Ollama::new(&cfg.llm.base_url, &cfg.desktop.model, 5).installed()
+            {
+                line(
+                    list.iter().any(|m| same_model(m, &cfg.desktop.model)),
+                    format!("on-screen model {} (ollama pull {})", cfg.desktop.model, cfg.desktop.model),
+                );
+            }
+        }
+        None => println!("· on-screen actions are off: `brew install agent-desktop` turns them on"),
+    }
+    match alfred_mac::find_program(&cfg.browser.command) {
+        Some(program) if cfg.browser.enabled && cfg.browser.use_chrome => {
+            line(true, format!("agent-browser at {} (website tasks and spoken search answers, in your Chrome)", program.display()));
+            line(
+                chrome_lets_alfred_in(),
+                "Chrome allows remote debugging, so Alfred can work in a tab of its own (turn it on at chrome://inspect/#remote-debugging, with Chrome open)".to_string(),
+            );
+        }
+        Some(program) if cfg.browser.enabled => line(
+            true,
+            format!(
+                "agent-browser at {} (website tasks and spoken search answers; profile {})",
+                program.display(),
+                cfg.browser.profile_dir().display()
+            ),
+        ),
+        Some(_) => println!("· website tasks are off in the config ([browser] enabled = false)"),
+        None => println!("· website tasks are off and searches only open the results: `brew install agent-browser` turns them on"),
+    }
     let mic = rune::Recorder::permission();
     println!("· microphone permission: {mic:?} (asked the first time you talk to Alfred)");
+    let kept = alfred_core::record::summary(&config::recordings_dir());
+    println!(
+        "· recording is {} ({} kept; `alfred recordings` says more)",
+        if cfg.recording.enabled { "on" } else { "off" },
+        megabytes(kept.bytes)
+    );
     println!("· Notes and Reminders ask for Automation permission the first time Alfred uses them");
     if ok { Ok(()) } else { Err("some pieces are missing: `alfred setup` fixes most of them".into()) }
 }
 
+/// What the recordings folder holds, in words; `clear` deletes it.
+fn recordings(args: &[String]) -> Result<(), String> {
+    let cfg = load_config()?;
+    let dir = config::recordings_dir();
+    let found = alfred_core::record::summary(&dir);
+    if args.first().map(String::as_str) == Some("clear") {
+        if found.files == 0 {
+            println!("There are no recordings to delete.");
+            return Ok(());
+        }
+        let sure = args.iter().any(|a| a == "--yes") || {
+            eprint!("Delete {} of recordings in {}? ", megabytes(found.bytes), dir.display());
+            std::io::stdin().is_terminal() && confirm_on_terminal()
+        };
+        if !sure {
+            println!("Nothing was deleted.");
+            return Ok(());
+        }
+        let n = alfred_core::record::clear(&dir).map_err(|e| format!("couldn't delete the recordings: {e}"))?;
+        println!("Deleted {n} file(s) of recordings.");
+        return Ok(());
+    }
+    println!("{}", recording_status(&cfg, &found, &dir));
+    Ok(())
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1e6)
+}
+
+/// "Recording is on …" or "off …", with what has been kept so far.
+fn recording_status(cfg: &Config, found: &alfred_core::record::Summary, dir: &Path) -> String {
+    let mut lines = vec![if cfg.recording.enabled {
+        format!(
+            "Recording is on: Alfred keeps what it is asked, what its models see and answer, and what each action does, in {} (this Mac only).",
+            dir.display()
+        )
+    } else {
+        "Recording is off. Turn it on with `enabled = true` under `[recording]` in the config: Alfred then keeps what it is asked, what its models see and answer (including what is on screen in the apps and pages it works in), and what each action does, on this Mac only.".to_string()
+    }];
+    if found.files == 0 {
+        lines.push("Nothing has been recorded yet.".into());
+    } else {
+        let n = |k: &str| found.kinds.get(k).copied().unwrap_or(0);
+        let days = match (&found.first_day, &found.last_day) {
+            (Some(a), Some(b)) if a == b => format!("on {a}"),
+            (Some(a), Some(b)) => format!("from {a} to {b}"),
+            _ => String::new(),
+        };
+        lines.push(format!(
+            "Kept {days}: {} requests, {} model calls, {} actions ({} worked, {} failed), {} yes/no answers; {} of {} MB.",
+            n("request"),
+            n("model"),
+            n("action"),
+            found.worked,
+            found.failed,
+            n("confirmation"),
+            megabytes(found.bytes),
+            cfg.recording.max_mb
+        ));
+        if found.bytes >= cfg.recording.max_mb * 1_000_000 {
+            lines.push("The folder is full, so nothing new is recorded: raise `max_mb` or run `alfred recordings clear`.".into());
+        }
+        lines.push("`alfred recordings clear` deletes them.".into());
+    }
+    lines.join("\n")
+}
+
+fn list_shortcuts() -> Result<(), String> {
+    let cfg = load_config()?;
+    let names = alfred_mac::shortcuts::list(Duration::from_secs(15))?;
+    if names.is_empty() {
+        println!("No shortcuts yet: make some in the Shortcuts app, then say \"run <name>\".");
+        return Ok(());
+    }
+    let trusted: Vec<String> = cfg.shortcuts.trusted.iter().map(|t| alfred_core::catalog::fold(t)).collect();
+    for n in &names {
+        let mark = if trusted.contains(&alfred_core::catalog::fold(n)) { "  (runs without asking)" } else { "" };
+        println!("{n}{mark}");
+    }
+    println!(
+        "\nSay \"run <name>\" to run one. When Alfred picks one from looser words it asks first, unless the name is in [shortcuts] trusted."
+    );
+    Ok(())
+}
+
 fn eval(args: &[String]) -> Result<(), String> {
     let with_model = args.iter().any(|a| a == "--model");
-    let cases = match args.iter().find(|a| !a.starts_with("--")) {
-        Some(file) => alfred_core::eval::load(&PathBuf::from(file))?,
-        None => alfred_core::eval::parse(FIXTURE)?,
+    let (cases, catalog) = match args.iter().find(|a| !a.starts_with("--")) {
+        Some(file) => alfred_core::eval::load_with_catalog(&PathBuf::from(file))?,
+        None => alfred_core::eval::parse_with_catalog(FIXTURE)?,
     };
     let cfg = load_config()?;
     if with_model {
@@ -245,7 +455,11 @@ fn eval(args: &[String]) -> Result<(), String> {
     }
     let report = alfred_core::eval::run(&cases, || {
         let model = with_model.then(|| llm::from_config(&cfg.llm));
-        Agent::new(model).with_tool_mode(cfg.llm.tool_mode)
+        let agent = Agent::new(model).with_tool_mode(cfg.llm.tool_mode).with_thinking(cfg.llm.thinking).with_catalog(catalog.clone());
+        match with_model.then(|| llm::thinker_from_config(&cfg.llm)).flatten() {
+            Some(thinker) => agent.with_thinker(thinker),
+            None => agent,
+        }
     });
     print!("{}", report.render());
     Ok(())
@@ -260,6 +474,27 @@ mod tests {
         assert!(same_model("qwen3:0.6b", "qwen3:0.6b"));
         assert!(same_model("llama3:latest", "llama3"));
         assert!(!same_model("qwen3:1.7b", "qwen3:0.6b"));
+    }
+
+    #[test]
+    fn recording_status_says_what_is_kept_and_how_to_delete_it() {
+        let dir = std::env::temp_dir().join(format!("alfred-cli-recordings-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let mut cfg = Config::default();
+        let off = recording_status(&cfg, &alfred_core::record::summary(&dir), &dir);
+        assert!(
+            off.starts_with("Recording is off.") && off.contains("on this Mac only") && off.contains("Nothing has been recorded"),
+            "{off}"
+        );
+        cfg.recording.enabled = true;
+        let rec = alfred_core::record::Recorder::to_dir(&dir, 1);
+        rec.next_turn();
+        rec.record("request", serde_json::json!({"text": "open notes"}));
+        rec.record("action", serde_json::json!({"ok": true}));
+        let on = recording_status(&cfg, &alfred_core::record::summary(&dir), &dir);
+        assert!(on.starts_with("Recording is on") && on.contains("1 requests") && on.contains("(1 worked, 0 failed)"), "{on}");
+        assert!(on.contains("alfred recordings clear"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

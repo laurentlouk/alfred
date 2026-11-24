@@ -14,7 +14,20 @@ pub const SCENES: &[Scene] = &[
     ("speaking", speaking),
     ("conversation", conversation),
     ("confirm", confirm),
+    ("typing", typing),
+    ("muted", muted),
 ];
+
+fn typing(s: &mut Ui) {
+    s.input.replace_text(
+        "Reply to Ada on WhatsApp saying that I'll be there at seven, that I'm bringing the slides for Friday's review, and ask her whether the room has a projector or if we should bring ours",
+    );
+}
+
+fn muted(s: &mut Ui) {
+    s.wake_word = true;
+    s.muted = true;
+}
 
 fn turn(you: &str, alfred: &str, chips: &[(&str, ChipState)]) -> Turn {
     Turn { you: you.into(), alfred: alfred.into(), chips: chips.iter().map(|(l, s)| Chip { label: (*l).into(), state: *s }).collect() }
@@ -23,6 +36,7 @@ fn turn(you: &str, alfred: &str, chips: &[(&str, ChipState)]) -> Turn {
 fn listening(s: &mut Ui) {
     s.mode = Mode::Listening;
     s.level = 0.7;
+    s.input.replace_text("open Notes and save pick up the");
 }
 
 fn thinking(s: &mut Ui) {

@@ -1,0 +1,87 @@
+# Requests about the page the user is looking at in Chrome: they act in the user's own tab, through
+# agent-browser (use_their_tab), never through on-screen control of the browser app, and never by searching.
+#   alfred eval --model eval/page.toml
+
+[catalog]
+hands = true
+browser = true
+
+# --- in Chrome, the page is what "this" and "here" mean, and what an action without a target acts on -------
+[[case]]
+text = "what is this page about?"
+app = "Google Chrome"
+site = "https://news.ycombinator.com/"
+tool = "use_their_tab"
+
+[[case]]
+text = "summarize this article"
+app = "Google Chrome"
+site = "https://www.theverge.com/2026/11/23/ai-chips"
+tool = "use_their_tab"
+
+[[case]]
+text = "open the second story"
+app = "Google Chrome"
+site = "https://news.ycombinator.com/"
+tool = "use_their_tab"
+
+[[case]]
+text = "scroll down"
+app = "Google Chrome"
+site = "https://www.youtube.com/"
+tool = "use_their_tab"
+
+[[case]]
+text = "click on the sign in button"
+app = "Google Chrome"
+site = "https://github.com/"
+tool = "use_their_tab"
+
+[[case]]
+text = "play the first video"
+app = "Google Chrome"
+site = "https://www.youtube.com/results?search_query=lofi"
+tool = "use_their_tab"
+
+[[case]]
+text = "search for wireless headphones on this site"
+app = "Google Chrome"
+site = "https://www.amazon.fr/"
+tool = "use_their_tab"
+
+[[case]]
+text = "add this to my cart"
+app = "Google Chrome"
+site = "https://www.amazon.fr/dp/B0D1234"
+tool = "use_their_tab"
+
+[[case]]
+text = "go back"
+app = "Google Chrome"
+site = "https://en.wikipedia.org/wiki/Pikachu"
+tool = "use_their_tab"
+
+[[case]]
+text = "quelle est la date de cet article ?"
+app = "Google Chrome"
+site = "https://www.lemonde.fr/article"
+tool = "use_their_tab"
+
+# --- and when it isn't about the page, the usual tools still apply ------------------------------------------
+[[case]]
+text = "what's the weather in Paris?"
+app = "Google Chrome"
+site = "https://www.youtube.com/"
+tool = "web_search"
+
+[[case]]
+text = "open Notes"
+app = "Google Chrome"
+site = "https://www.youtube.com/"
+tool = "open_app"
+
+[[case]]
+text = "what is the capital of Italy?"
+app = "Google Chrome"
+site = "https://www.youtube.com/"
+tool = "chat"
