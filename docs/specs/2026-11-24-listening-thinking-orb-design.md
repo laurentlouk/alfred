@@ -61,6 +61,20 @@ Alfred v1 worked, but daily use showed five gaps the owner asked to close:
    recorder's growing WAV file.
 6. **Saying "Alfred" interrupts.** While Alfred speaks, a wake-word hit still emits `Wake`; the app stops
    speaking and captures the command after it.
+6a. **A conversation stays open (added 2026-11-24, at the owner's request).** After Alfred answers a
+   spoken request, the next words need no "Alfred" for `[voice] follow_up_secs` (30 s), and every exchange
+   starts the time again. `Ears::follow_up(secs)` opens the window: the voice detector watches the
+   microphone, and confirmed speech starts a command where the speech began (`Heard::FollowUp`), as a
+   wake-word hit does. The window never watches while Alfred speaks (its own voice would start it; there
+   is no echo cancellation) and hears the first 0.5 s after as silence; it counts down on quiet audio only,
+   closes when a command is heard (the app opens it again after the answer) and says so when it runs out
+   (`Heard::FollowEnded`). The speaker's level from the last command is kept, so a quieter voice doesn't
+   start a follow-up. Sound without words is passed over in silence. "Alfred, stop" (or "stop",
+   "that's all", "arrête" in the window) ends the conversation in the app: it stops the speech, closes the
+   window and is never sent to the model. Typed requests open no window; muting closes it. *Rejected:*
+   listening during Alfred's own speech (it would hear itself), and a window after typed requests (the
+   user chose the keyboard). *Limit:* another voice or a video near the microphone, as loud as the user,
+   can start a command during the window.
 7. **Speech is brought to a speaking loudness** (RMS 0.16, about −16 dBFS, peaks at most 0.92, gain 1 to 4)
    and played at the system volume. *Rejected:* a fixed peak (quiet speech stayed quiet), a volume setting
    of Alfred's own (it should respect the Mac's).

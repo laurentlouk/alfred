@@ -232,11 +232,22 @@ pub struct VoiceConfig {
     /// Keep the microphone open and listen for "Alfred", like "Hey Siri". The microphone indicator stays
     /// on while it does; everything is heard on the Mac and nothing is kept until "Alfred" is said.
     pub wake_word: bool,
+    /// After a spoken exchange, how long Alfred keeps listening for what you say next without "Alfred"
+    /// before it, in seconds; each exchange starts it again, and "Alfred, stop" ends it. 0 turns it off.
+    pub follow_up_secs: f32,
 }
 
 impl Default for VoiceConfig {
     fn default() -> Self {
-        Self { speak: true, voice: "bm_george".into(), speed: 1.05, silence_secs: 1.2, max_listen_secs: 20.0, wake_word: false }
+        Self {
+            speak: true,
+            voice: "bm_george".into(),
+            speed: 1.05,
+            silence_secs: 1.2,
+            max_listen_secs: 20.0,
+            wake_word: false,
+            follow_up_secs: 30.0,
+        }
     }
 }
 

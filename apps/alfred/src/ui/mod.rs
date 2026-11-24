@@ -77,6 +77,14 @@ pub struct Ui {
     pub muted: bool,
     /// Alfred is recording its runs (the user turned it on): the footer says so.
     pub recording: bool,
+    /// How long the conversation stays open after Alfred answers a spoken request, in seconds.
+    pub follow_secs: f32,
+    /// The follow-up window is open: what is said next needs no "Alfred".
+    pub following: bool,
+    /// The request under way was spoken, so the conversation stays open after its answer.
+    spoken_turn: bool,
+    /// The listening under way began in the follow-up window: if it was only noise, nothing is said.
+    follow_listening: bool,
     pub shortcut: String,
     /// The panel has had the keyboard since it was last shown. Only then does losing it hide the panel:
     /// shown while another app is in front (at launch, from Finder), it never gets focus, and hiding on
@@ -113,6 +121,10 @@ impl Ui {
             ears_ready: true,
             wake_word: false,
             recording: false,
+            follow_secs: 30.0,
+            following: false,
+            spoken_turn: false,
+            follow_listening: false,
             muted: false,
             shortcut: Config::default().ui.shortcut,
             had_focus: false,
@@ -131,6 +143,7 @@ impl Ui {
             shortcut: links.config.ui.shortcut.clone(),
             wake_word: links.config.voice.wake_word,
             recording: links.config.recording.enabled,
+            follow_secs: links.config.voice.follow_up_secs,
             model_label: String::new(),
             voice_ready: false,
             ears_ready: false,
@@ -145,6 +158,7 @@ impl Ui {
         }
         match self.mode {
             Mode::Idle if self.muted => "Not listening.".into(),
+            Mode::Idle if self.following => "I'm listening. “Alfred, stop” to end.".into(),
             Mode::Idle => "At your service.".into(),
             Mode::Listening => "Listening…".into(),
             Mode::Transcribing => "One moment…".into(),
@@ -171,7 +185,35 @@ impl Ui {
             return;
         }
         self.input.clear();
+        // A typed request isn't a spoken conversation: nothing stays open after its answer.
+        self.spoken_turn = false;
         self.ask(text);
+    }
+
+    /// Alfred has answered a spoken request: keep the conversation open, so the next words need no
+    /// "Alfred". Every answer starts the time again.
+    fn open_follow_up(&mut self) {
+        if !self.spoken_turn || self.muted || self.follow_secs <= 0.0 {
+            return;
+        }
+        self.following = true;
+        if let Some(e) = self.ears() {
+            e.follow_up(self.follow_secs);
+        }
+    }
+
+    /// "Alfred, stop": stop talking, close the conversation, and wait for "Alfred" again.
+    fn end_conversation(&mut self) {
+        self.stop_speaking();
+        self.spoken_turn = false;
+        self.following = false;
+        self.follow_listening = false;
+        if let Some(e) = self.ears() {
+            e.follow_up(0.0);
+        }
+        self.restore_typed();
+        self.mode = Mode::Idle;
+        self.notice = None;
     }
 
     pub fn ask(&mut self, text: String) {
@@ -213,6 +255,11 @@ impl Ui {
     pub fn set_muted(&mut self, muted: bool) {
         if muted && matches!(self.mode, Mode::Listening | Mode::Transcribing) {
             self.cancel_listening();
+        }
+        if muted {
+            // Muting closes the conversation too (the ears close their window themselves).
+            self.following = false;
+            self.spoken_turn = false;
         }
         self.muted = muted;
         self.notice = None;
@@ -299,10 +346,23 @@ impl Ui {
                     summon(&l.me, false);
                 }
                 std::process::Command::new("afplay").arg("/System/Library/Sounds/Tink.aiff").spawn().ok();
+                self.follow_listening = false;
             }
+            // Speech in the follow-up window: listen, with no chime and without coming forward.
+            Heard::FollowUp => {
+                self.begin_listening();
+                self.follow_listening = true;
+            }
+            Heard::FollowEnded => self.following = false,
             Heard::Level(x) => self.mic_level = x,
             Heard::Partial(text) => self.on_partial(self.attempt, text),
             Heard::Final(text) if listening => self.on_heard(self.attempt, text),
+            // A sound in the follow-up window that held no words: back to waiting, without a word about it.
+            Heard::Nothing if listening && self.follow_listening => {
+                self.follow_listening = false;
+                self.restore_typed();
+                self.mode = Mode::Idle;
+            }
             Heard::Nothing if listening => {
                 self.restore_typed();
                 self.mode = Mode::Idle;
@@ -445,6 +505,7 @@ impl Ui {
             }
         } else {
             self.mode = Mode::Idle;
+            self.open_follow_up();
         }
     }
 
@@ -470,6 +531,9 @@ impl Ui {
         if let Some(e) = self.ears() {
             e.set_speaking(false);
         }
+        if attempt == self.attempt {
+            self.open_follow_up();
+        }
     }
 
     pub fn on_heard(&mut self, attempt: u64, text: String) {
@@ -480,9 +544,13 @@ impl Ui {
             self.restore_typed();
             self.mode = Mode::Idle;
             self.notice = Some("I didn't catch that. Try again, or type it.".into());
+        } else if self.typed.is_empty() && ends_conversation(&text) {
+            self.end_conversation();
         } else {
             let said = join_said(&std::mem::take(&mut self.typed), &text);
             self.input.clear();
+            self.follow_listening = false;
+            self.spoken_turn = true;
             self.ask(said);
         }
     }
@@ -499,6 +567,31 @@ impl Ui {
 /// Typed words and spoken ones, as one request.
 fn join_said(typed: &str, heard: &str) -> String {
     [typed.trim(), heard.trim()].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// Words that end a spoken conversation, said after "Alfred" or in the follow-up window.
+const STOP_PHRASES: &[&str] = &[
+    "stop",
+    "stop it",
+    "stop now",
+    "stop listening",
+    "stop alfred",
+    "thats all",
+    "that is all",
+    "that will be all",
+    "thatll be all",
+    "goodbye",
+    "good bye",
+    "bye",
+    "arrete",
+    "arrete toi",
+    "cest tout",
+];
+
+/// Whether what was heard asks Alfred to stop and close the conversation ("Stop.", "That's all.").
+pub fn ends_conversation(heard: &str) -> bool {
+    let said = alfred_core::catalog::fold(&heard.replace(['\'', '’'], ""));
+    STOP_PHRASES.contains(&said.trim())
 }
 
 /// Bring Alfred forward, taking the keyboard (`open` also creates the window the first time). At launch it

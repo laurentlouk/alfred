@@ -15,6 +15,7 @@ Summon it, say or type what you need, and it opens your apps, saves notes, adds 
 
 - **Always at hand.** Alfred is an orb that floats over your windows, on your main display and on every desktop, with no window or background around it; drag the orb to put it anywhere. <kbd>⌃⇧Space</kbd> brings it forward, it's in the Dock and <kbd>⌘Tab</kbd> like any app, and <kbd>esc</kbd> puts it away. Answers are spoken rather than written, and the field grows as you type, like a chat's (<kbd>Return</kbd> sends, <kbd>⇧Return</kbd> adds a line).
 - **Just say "Alfred".** "Alfred, what time is it?" works from across the room, like "Hey Siri" (turn on `wake_word`); the mic button turns that listening off, and the microphone with it, and back on. Or press <kbd>⌘L</kbd> and speak. Your words appear as you say them, background noise is cleaned out, and Alfred answers about half a second after you stop. Say "Alfred" while it talks to cut it short.
+- **A conversation, not commands.** After Alfred answers something you said, it keeps listening for 30 seconds: say the next thing without "Alfred", and each exchange starts the 30 seconds again. "Alfred, stop" ends it. While Alfred is talking, only "Alfred" interrupts.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches the web, opens links, tells the time.
 - **It answers from the web.** "What's the weather in Paris?" opens the results in Alfred's own browser tab, reads them, and tells you; when they don't say, it keeps looking, as you would.
 - **It knows where you are.** Alfred sees which app you're in and, in a browser, which site, so "this page", "here" and follow-ups just work: "go to the Pokémon website", then "what Pokémon do you see?", then "open the Pokédex and tell me the first one". "Prompt Claude for me: …" writes it in Claude.
@@ -220,6 +221,7 @@ speak = true
 voice = "bm_george"          # British male; try bf_emma, af_heart, am_michael
 speed = 1.05
 wake_word = false            # true: keep the microphone open and listen for "Alfred"
+follow_up_secs = 30.0        # after a spoken answer, keep listening this long without "Alfred" (0: off)
 silence_secs = 1.2           # quiet that ends a command that trails off
 max_listen_secs = 20.0
 

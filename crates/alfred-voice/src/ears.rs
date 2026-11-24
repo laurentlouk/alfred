@@ -96,6 +96,10 @@ pub enum Heard {
     Final(String),
     /// The command ended without words.
     Nothing,
+    /// Speech began in the follow-up window: a command is being captured, with no "Alfred" before it.
+    FollowUp,
+    /// The follow-up window ran out: from now on only "Alfred" (or a click) starts a command.
+    FollowEnded,
     Error(String),
 }
 
@@ -105,6 +109,7 @@ enum Control {
     Cancel,
     Speaking(bool),
     Muted(bool),
+    Follow(f32),
     Stop,
 }
 
@@ -182,6 +187,14 @@ impl Ears {
     /// the click, which is its own voice.
     pub fn set_speaking(&self, on: bool) {
         self.control.send(Control::Speaking(on)).ok();
+    }
+
+    /// Keep the conversation open for `secs` seconds: speech in that time starts a command with no "Alfred"
+    /// before it ([`Heard::FollowUp`]). Call it when Alfred has answered; the window waits while Alfred
+    /// speaks, closes when a command is heard (call it again after the next answer) and announces its end
+    /// with [`Heard::FollowEnded`]. 0 closes it now, silently.
+    pub fn follow_up(&self, secs: f32) {
+        self.control.send(Control::Follow(secs)).ok();
     }
 
     /// Mute: the microphone closes (macOS's indicator goes out), the command being heard is dropped, and
@@ -284,12 +297,22 @@ fn run<S: Source>(mut core: Core, mut source: S, commands: Receiver<Control>, on
                 }
                 Control::Finish => core.finish(&on),
                 Control::Cancel => core.cancel(),
-                Control::Speaking(speaking) => core.speaking = speaking,
+                Control::Speaking(speaking) => {
+                    core.speaking = speaking;
+                    // After Alfred's own voice, the follow-up window listens on fresh audio.
+                    core.follow_fresh = true;
+                }
                 Control::Muted(muted) => {
                     if muted {
                         core.cancel();
+                        core.follow = 0;
                     }
                     core.muted = muted;
+                    retry_at = None;
+                }
+                Control::Follow(secs) => {
+                    core.follow = samples(secs);
+                    core.follow_fresh = true;
                     retry_at = None;
                 }
             }
@@ -349,6 +372,9 @@ const TAIL_SECS: f32 = 0.25;
 /// doesn't count as the command's speech, while a word said in the same breath ("Alfred, stop") is
 /// still long enough to be heard.
 const KEYWORD_TAIL_SECS: f32 = 0.2;
+/// When the follow-up window starts watching, this much audio is heard as silence: the end of Alfred's
+/// own voice, still in the room.
+const ECHO_SECS: f32 = 0.5;
 /// The denoiser settles on this much of the audio before a command, when there is some.
 const WARM_UP_SECS: f32 = 1.0;
 /// The audio before a command's start that holds "Alfred", whose level tells the speaker's.
@@ -365,6 +391,13 @@ struct Core {
     speaking: bool,
     /// The user turned listening off: no microphone at all.
     muted: bool,
+    /// Samples left in the follow-up window (0 when closed): speech in it starts a command without the
+    /// wake word.
+    follow: usize,
+    /// The follow-up window must start watching on fresh audio (it just opened, or Alfred just spoke).
+    follow_fresh: bool,
+    /// The speaker's level in the last command, so a quieter voice doesn't start a follow-up.
+    voice_db: Option<f32>,
     /// The last seconds of audio while waiting for the wake word.
     recent: VecDeque<f32>,
     command: Option<Command>,
@@ -397,13 +430,16 @@ impl Core {
             listener: Listener::load(models)?,
             speaking: false,
             muted: false,
+            follow: 0,
+            follow_fresh: false,
+            voice_db: None,
             recent: VecDeque::with_capacity(samples(RECENT_SECS)),
             command: None,
         })
     }
 
     fn wants_mic(&self) -> bool {
-        !self.muted && (self.wake.is_some() || self.command.is_some())
+        !self.muted && (self.wake.is_some() || self.command.is_some() || self.follow > 0)
     }
 
     fn listen_now(&mut self, emit: &dyn Fn(Heard)) {
@@ -428,14 +464,17 @@ impl Core {
             self.hear(chunk, emit);
             return;
         }
-        let Some(wake) = self.wake.as_mut() else { return };
+        if self.wake.is_none() && self.follow == 0 {
+            return;
+        }
         self.recent.extend(chunk);
         let excess = self.recent.len().saturating_sub(samples(RECENT_SECS));
         self.recent.drain(..excess);
-        if let Some(hit) = wake.accept(chunk) {
+        let hit = self.wake.as_mut().and_then(|w| w.accept(chunk).map(|hit| (w.position() - hit.end) as usize));
+        if let Some(since_keyword) = hit {
             // A hit while Alfred talks is a barge-in: the command is captured all the same.
             emit(Heard::Wake);
-            let since_keyword = ((wake.position() - hit.end) as usize).min(self.recent.len());
+            let since_keyword = since_keyword.min(self.recent.len());
             let start = self.recent.len() - since_keyword;
             self.begin(start);
             let keyword = self.recent_from(start.saturating_sub(samples(KEYWORD_SECS)), samples(KEYWORD_SECS).min(start));
@@ -445,6 +484,49 @@ impl Core {
             }
             let after = self.recent_from(start, since_keyword);
             self.hear(&after, emit);
+            return;
+        }
+        self.watch(chunk, emit);
+    }
+
+    /// The follow-up window: after an exchange, speech starts a command without the wake word. The voice
+    /// detector watches the microphone (never while Alfred speaks: that is its own voice); once speech is
+    /// confirmed, the command starts where the speech began. Quiet audio counts the window down.
+    fn watch(&mut self, chunk: &[f32], emit: &dyn Fn(Heard)) {
+        if self.follow == 0 || self.speaking {
+            return;
+        }
+        if std::mem::take(&mut self.follow_fresh) {
+            self.vad.reset();
+            if let Some(db) = self.voice_db {
+                self.vad.expect_voice(db);
+            }
+            // The tail of Alfred's voice in the room is not the user.
+            self.vad.skip(samples(ECHO_SECS));
+        }
+        self.vad.accept(chunk);
+        if self.vad.heard_speech() {
+            let began = self.vad.speech_span().map_or(0, |(start, _)| start);
+            let since = ((self.vad.position().saturating_sub(began)) as usize + samples(PAD_SECS)).min(self.recent.len());
+            let start = self.recent.len() - since;
+            emit(Heard::FollowUp);
+            self.begin(start);
+            if let Some(db) = self.voice_db {
+                self.vad.expect_voice(db);
+            }
+            let said = self.recent_from(start, since);
+            self.hear(&said, emit);
+            return;
+        }
+        if !self.vad.is_speech() {
+            self.follow = self.follow.saturating_sub(chunk.len());
+            if self.follow == 0 {
+                emit(Heard::FollowEnded);
+                self.vad.reset();
+                if self.wake.is_none() {
+                    self.recent.clear();
+                }
+            }
         }
     }
 
@@ -535,12 +617,22 @@ impl Core {
     /// End the command: its text, or Nothing.
     fn end(&mut self, emit: &dyn Fn(Heard)) {
         let Some(cmd) = self.command.take() else { return };
+        if let Some(db) = self.vad.voice_db() {
+            self.voice_db = Some(db);
+        }
         let text = match (self.vad.speech_span(), cmd.transcribed) {
             (None, _) => String::new(),
             // Ending on silence: the pause's transcription already covers every word.
             (Some(span), Some((done, text))) if done == span => text,
             (Some(span), _) => transcribe(&self.listener, &cmd.audio, span),
         };
+        // A command was heard: the window closes until Alfred has answered (the app opens it again). Sound
+        // without words leaves what is left of it.
+        if text.is_empty() {
+            self.follow_fresh = true;
+        } else {
+            self.follow = 0;
+        }
         emit(if text.is_empty() { Heard::Nothing } else { Heard::Final(text) });
         self.after_command();
     }
@@ -551,6 +643,7 @@ impl Core {
 
     fn cancel(&mut self) {
         if self.command.take().is_some() {
+            self.follow_fresh = true;
             self.after_command();
         }
     }
@@ -995,6 +1088,81 @@ mod listening {
         assert_eq!(events[0].1, Heard::Wake);
         // Moonshine hears "What time is it?" or, from some renderings, "What tone is it?".
         assert!(matches!(&last_text(&events).1, Heard::Final(t) if t.to_lowercase().contains("is it")), "{events:?}");
+    }
+
+    /// "Alfred, open Notes.", the quiet after it, then `after` (more audio): the ears, fed up to the end of
+    /// that first command, and where `after` starts.
+    fn after_a_first_command(m: &Path, after: Vec<f32>) -> (Run, usize) {
+        let mut audio = silence(0.5);
+        audio.extend(say("Alfred, open Notes."));
+        audio.extend(silence(2.0));
+        let first = audio.len();
+        audio.extend(after);
+        let run = start(m, wake_on(), audio);
+        let heard = run.feed_until(first);
+        assert!(heard.iter().any(|h| matches!(h, Heard::Final(_))), "the first command: {heard:?}");
+        (run, first)
+    }
+
+    fn without_levels(events: Vec<Heard>) -> Vec<Heard> {
+        events.into_iter().filter(|h| !matches!(h, Heard::Level(_) | Heard::Partial(_))).collect()
+    }
+
+    #[test]
+    fn after_an_exchange_the_next_words_need_no_alfred() {
+        let Some(m) = models_ready() else { return };
+        let mut more = say("What time is it?");
+        more.extend(silence(2.0));
+        let (run, _) = after_a_first_command(&m, more);
+        // Alfred has answered: the conversation stays open.
+        run.ears.follow_up(30.0);
+        run.play();
+        let events = run.command();
+        let kinds = without_levels(events.iter().map(|(_, h)| h.clone()).collect());
+        assert_eq!(kinds.first(), Some(&Heard::FollowUp), "{kinds:?}");
+        assert!(!kinds.contains(&Heard::Wake), "no keyword was said: {kinds:?}");
+        assert!(matches!(kinds.last(), Some(Heard::Final(t)) if t.to_lowercase().contains("is it")), "{kinds:?}");
+    }
+
+    #[test]
+    fn the_follow_up_window_closes_by_itself_and_then_only_alfred_counts() {
+        let Some(m) = models_ready() else { return };
+        let mut more = silence(3.0);
+        more.extend(say("What time is it?"));
+        more.extend(silence(2.0));
+        let (run, _) = after_a_first_command(&m, more);
+        run.ears.follow_up(2.0);
+        assert_eq!(without_levels(run.feed_until(usize::MAX)), vec![Heard::FollowEnded], "said too late, without the keyword");
+    }
+
+    #[test]
+    fn alfreds_own_voice_never_starts_a_follow_up() {
+        let Some(m) = models_ready() else { return };
+        let mut more = say("Notes is open and ready for you.");
+        more.extend(silence(1.0));
+        let spoken = more.len();
+        more.extend(say("What time is it?"));
+        more.extend(silence(2.0));
+        let (run, first) = after_a_first_command(&m, more);
+        run.ears.follow_up(30.0);
+        run.ears.set_speaking(true);
+        assert_eq!(without_levels(run.feed_until(first + spoken)), vec![], "Alfred's answer through the speakers starts nothing");
+        run.ears.set_speaking(false);
+        run.play();
+        let kinds = without_levels(run.command().into_iter().map(|(_, h)| h).collect());
+        assert_eq!(kinds.first(), Some(&Heard::FollowUp), "{kinds:?}");
+        assert!(matches!(kinds.last(), Some(Heard::Final(t)) if t.to_lowercase().contains("is it")), "{kinds:?}");
+    }
+
+    #[test]
+    fn muting_or_closing_ends_the_follow_up_window() {
+        let Some(m) = models_ready() else { return };
+        let mut more = say("What time is it?");
+        more.extend(silence(2.0));
+        let (run, _) = after_a_first_command(&m, more);
+        run.ears.follow_up(30.0);
+        run.ears.follow_up(0.0);
+        assert_eq!(without_levels(run.feed_until(usize::MAX)), vec![], "closed: the words start nothing, and nothing is announced");
     }
 
     /// Someone across the room, `db_below` dB under `speaker`.

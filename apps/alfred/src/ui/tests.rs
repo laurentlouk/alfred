@@ -254,6 +254,75 @@ fn a_command_with_no_words_or_a_microphone_error_is_explained() {
     assert!(ui.caption().contains("microphone went away"));
 }
 
+/// A spoken request and its answer: the state Alfred is in when the conversation stays open.
+fn after_a_spoken_exchange() -> Ui {
+    let mut ui = Ui::demo();
+    ui.toggle_listening();
+    ui.on_heard(1, "open notes".into());
+    ui.on_turn(2, agent_turn("Notes is open.", None));
+    ui
+}
+
+#[test]
+fn a_spoken_request_keeps_the_conversation_open_and_a_typed_one_does_not() {
+    let ui = after_a_spoken_exchange();
+    assert!(ui.following);
+    assert_eq!(ui.caption(), "I'm listening. “Alfred, stop” to end.");
+
+    let mut typed = Ui::demo();
+    typed.input = TextEdit::new("open notes");
+    typed.submit();
+    typed.on_turn(1, agent_turn("Notes is open.", None));
+    assert!(!typed.following, "typing isn't a conversation");
+    assert_eq!(typed.caption(), "At your service.");
+}
+
+#[test]
+fn a_follow_up_needs_no_keyword_and_starts_the_time_again() {
+    use alfred_voice::Heard;
+    let mut ui = after_a_spoken_exchange();
+    ui.on_ears(Heard::FollowUp);
+    assert_eq!(ui.mode, Mode::Listening);
+    ui.on_ears(Heard::Final("What time is it?".into()));
+    assert_eq!(ui.turns.last().unwrap().you, "What time is it?");
+    ui.on_ears(Heard::FollowEnded); // the ears close the window while Alfred works on it
+    assert!(!ui.following);
+    let attempt = ui.turns.len() as u64 + 2;
+    ui.on_turn(attempt, agent_turn("It's 9:41.", None));
+    assert!(ui.following, "the answer opens it again");
+}
+
+#[test]
+fn alfred_stop_ends_the_conversation() {
+    use alfred_voice::Heard;
+    let mut ui = after_a_spoken_exchange();
+    let turns = ui.turns.len();
+    ui.toggle_listening(); // as after "Alfred"
+    ui.on_ears(Heard::Final("Stop.".into()));
+    assert_eq!(ui.mode, Mode::Idle);
+    assert!(!ui.following, "back to waiting for “Alfred”");
+    assert_eq!(ui.turns.len(), turns, "stop is not a request");
+    assert_eq!(ui.caption(), "At your service.");
+    for said in ["Stop.", "stop listening", "That's all.", "Goodbye!", "Arrête.", "C'est tout"] {
+        assert!(super::ends_conversation(said), "{said}");
+    }
+    for said in ["stop the music", "don't stop", "that's all I need from the list", ""] {
+        assert!(!super::ends_conversation(said), "{said}");
+    }
+}
+
+#[test]
+fn noise_in_the_follow_up_window_is_passed_over_in_silence() {
+    use alfred_voice::Heard;
+    let mut ui = after_a_spoken_exchange();
+    ui.on_ears(Heard::FollowUp);
+    ui.on_ears(Heard::Nothing);
+    assert_eq!(ui.mode, Mode::Idle);
+    assert!(ui.notice.is_none() && ui.following, "{:?}", ui.notice);
+    ui.set_muted(true);
+    assert!(!ui.following, "muting closes the conversation");
+}
+
 #[test]
 fn the_footer_says_when_alfred_is_recording() {
     let mut ui = Ui::demo();
