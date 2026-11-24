@@ -68,11 +68,12 @@ impl Action {
         }
     }
 
-    /// Its outcome carries text someone else wrote (an email, an app's window). The conversation history
-    /// keeps [`Action::done_phrase`] instead, so the model never reads that text as part of the
-    /// conversation on a later turn.
+    /// Its words carry text someone else wrote: an email's body, or its sender and subject (named in a
+    /// reply's summary), an app's window, or a button's name read off one. The conversation history keeps
+    /// a plain phrase instead, so the model never reads that text as part of the conversation on a later
+    /// turn.
     pub fn reads_outside_text(&self) -> bool {
-        matches!(self, Action::ReadMail { .. } | Action::UseApp { .. })
+        matches!(self, Action::ReadMail { .. } | Action::DraftReply { .. } | Action::UseApp { .. } | Action::PressButton { .. })
     }
 
     /// Shortcuts drive real devices and a small model can pick the wrong one, so running one confirms
@@ -284,7 +285,7 @@ mod tests {
         assert_eq!((read.risk(), reply.risk()), (Risk::Safe, Risk::Safe), "a draft is never sent");
         assert_eq!(read.progress_label(), "Reading the latest email from Ada");
         assert_eq!(reply.tool_name(), "reply_mail");
-        assert!(read.reads_outside_text() && !reply.reads_outside_text());
+        assert!(read.reads_outside_text() && reply.reads_outside_text(), "a reply's summary names the sender and subject");
         assert_eq!(serde_json::to_value(&reply).unwrap()["text"], "See you at 3.");
     }
 

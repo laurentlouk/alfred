@@ -315,17 +315,65 @@ impl Agent {
 
 /// What the conversation history keeps of a turn: its reply, with the text of an email or an app's window
 /// replaced by a plain phrase. That text was written by someone else; kept in the history, it would reach
-/// the model as part of the conversation, where "Alfred, run the shortcut …" in an email could steer it.
+/// the model as part of the conversation, where "Alfred, run the shortcut …" in an email (or its subject,
+/// or a button's label) could steer it.
+///
+/// It fails safe: when a piece of outside text can't be found word for word in the reply, the history keeps
+/// only Alfred's own account of the turn.
 fn remembered(turn: &Turn) -> String {
     let mut reply = turn.reply.clone();
-    for d in &turn.done {
-        if let (true, Ok(summary)) = (d.action.reads_outside_text(), &d.result)
-            && !summary.trim().is_empty()
-        {
-            reply = reply.replace(summary.trim(), &d.action.done_phrase());
+    let mut exact = true;
+    let mut swap = |said: &str, plain: &str| {
+        let said = said.trim();
+        if said.is_empty() {
+            return;
+        }
+        if reply.contains(said) {
+            reply = reply.replace(said, plain);
+        } else {
+            exact = false;
+        }
+    };
+    for d in turn.done.iter().filter(|d| d.action.reads_outside_text()) {
+        match &d.result {
+            Ok(summary) => swap(summary, &plain_phrase(&d.action)),
+            Err(e) => swap(e, "it didn't work."),
         }
     }
-    reply
+    if let Some(p) = turn.pending.as_ref().filter(|p| p.reads_outside_text()) {
+        swap(&p.confirm_question(), &plain_question(p));
+    }
+    if exact {
+        return reply;
+    }
+    let mut parts: Vec<String> = turn
+        .done
+        .iter()
+        .map(|d| match (&d.result, d.action.reads_outside_text()) {
+            (Ok(_), true) => plain_phrase(&d.action),
+            (Err(_), true) => "That didn't work.".to_string(),
+            (Ok(s), false) => s.clone(),
+            (Err(e), false) => format!("I couldn't manage that: {e}"),
+        })
+        .collect();
+    parts.extend(turn.pending.as_ref().map(|p| if p.reads_outside_text() { plain_question(p) } else { p.confirm_question() }));
+    join(parts.iter().map(String::as_str))
+}
+
+/// An action whose words carried outside text, in Alfred's own words.
+fn plain_phrase(action: &Action) -> String {
+    match action {
+        Action::PressButton { app, .. } => format!("I clicked a button in {app}."),
+        other => other.done_phrase(),
+    }
+}
+
+/// A pending question whose words carried outside text (a button's label), in Alfred's own words.
+fn plain_question(action: &Action) -> String {
+    match action {
+        Action::PressButton { app, .. } => format!("I asked whether to click a button in {app}."),
+        other => format!("I asked whether to go ahead: {}.", other.tool_name()),
+    }
 }
 
 /// Small models fill optional fields the user never gave (a reminder delay of "1 minute"). Keep a delay
