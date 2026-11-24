@@ -91,7 +91,10 @@ Alfred v1 worked, but daily use showed five gaps the owner asked to close:
     builds (NVFP4 and MLX) answer a `format` schema with 501. The agent switches to native tool calls for
     the session, parses Gemma's own call syntax when it arrives as text, and nudges once when a reply
     describes an action instead of calling it. The on-screen and browser hands need structured output, so
-    `[desktop] model` should be a GGUF build.
+    `[desktop] model` stays `qwen3:8b`. Gemma's GGUF build `gemma4:e4b-it-q8_0` does follow a schema, but
+    on live Wikipedia tasks (headless, agent-browser 0.44.0) it finished 1 of 3 against 3 of 3 for
+    `qwen3:8b`: it took Wikipedia's "did you mean: rule programming language" suggestion both times it was
+    asked for the first result on Rune, though it was faster on the one it finished (34 s against 56 s).
 12. **The panel is a floating orb.** A 300 × 480 point window, borderless, transparent and always on top,
     on every Space (`collection_behavior`), opened on the main display. Alfred is a regular app, in the
     Dock and ⌘Tab. The orb is drawn on the GPU by a Rune compositor in layers: a radial body, screened

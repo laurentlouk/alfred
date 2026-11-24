@@ -151,7 +151,7 @@ tool_mode = "native"
 think_model = "gemma4:e4b"
 ```
 
-Ollama's Apple-silicon builds of Gemma can't do structured output; Alfred notices and uses native tool calls anyway, and `tool_mode = "native"` skips that first try. On a Mac with less memory, `gemma4:e4b` alone (no `think_model`) needs about 10 GB, and `qwen3:4b` (2.5 GB) is a smaller step up from the default.
+Ollama's Apple-silicon builds of Gemma can't do structured output; Alfred notices and uses native tool calls anyway, and `tool_mode = "native"` skips that first try. Operating apps and websites needs structured output, so keep `qwen3:8b` there (`[desktop] model`): Gemma's 8-bit build that has it finished 1 of 3 live Wikipedia tasks, against 3 of 3 for `qwen3:8b`. On a Mac with less memory, `gemma4:e4b` alone (no `think_model`) needs about 10 GB, and `qwen3:4b` (2.5 GB) is a smaller step up from the default.
 
 ## Reaching other apps
 
