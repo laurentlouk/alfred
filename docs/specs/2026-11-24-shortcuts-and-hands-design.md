@@ -88,6 +88,18 @@ home devices, Slack. Two complementary bridges do that:
     and plan prompts point at them. Names lose the invisible marks some apps add (WhatsApp writes U+200E
     before its own name and its fields'). Measured live: "read my latest message on WhatsApp" answered in
     one look, 5.5 s from the command line; "how many conversations are listed?" answered "14".
+10b. **Messages follow a recipe, not a model (added 2026-11-24, at the owner's request: replying took
+    minutes).** `send_message { app, to, text }` is its own tool. `DesktopHands::send_message` opens the
+    conversation (the row whose name starts with `to`, else through the search field; the newest row,
+    named like "Name, last message, time", when nobody is named; nothing when the app has one message
+    box, like an assistant app), types into the message box (keystrokes, which chat apps react to, with
+    line breaks gone so no Enter), and returns the send button as the follow-up the user confirms. No
+    model call; each step is one agent-desktop call. A step it can't find hands the task to the loop. `to`
+    is kept only when the user said it, so a guessed name never opens someone else's chat. Checked
+    read-only on the owner's Mac: WhatsApp (message box "Saisissez un message", search, 25 conversations)
+    and Messages (message box "Message", search, 29 conversations; no send button, Return sends, so
+    Alfred leaves it written). Claude's window, holding a very long conversation, couldn't be read within
+    20 s (nor through `find`): the recipe then reports that it couldn't see the window.
 11. **Pending actions come from executors too.** `Outcome` gains an optional follow-up action. The agent
     turns it into the pending confirmation exactly like a risky router action, so the UI's Yes/No card and
     the CLI's prompt need no new code path.

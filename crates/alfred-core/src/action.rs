@@ -30,6 +30,9 @@ pub enum Action {
     RunShortcut { name: String, input: Option<String> },
     /// Operate an app on screen to do a task no other tool covers (needs `agent-desktop`).
     UseApp { app: String, task: String },
+    /// Write a message in a chat app (WhatsApp, Messages, Slack…): to `to` (a person or chat the user named),
+    /// else in the newest conversation or the app's one message box. Sending waits for the user's yes.
+    SendMessage { app: String, to: Option<String>, text: String },
     /// Click one named control in an app: the irreversible step a [`Action::UseApp`] or
     /// [`Action::UseBrowser`] run stopped before. `app` is [`BROWSER_APP`] for a web page.
     PressButton { app: String, role: String, name: String },
@@ -72,6 +75,7 @@ impl Action {
             Action::GetTime => "get_time",
             Action::RunShortcut { .. } => "run_shortcut",
             Action::UseApp { .. } => "use_app",
+            Action::SendMessage { .. } => "send_message",
             Action::PressButton { .. } => "press_button",
             Action::UseBrowser { .. } | Action::UseTheirTab { .. } => "use_browser",
             Action::ReadMail { .. } => "read_mail",
@@ -90,6 +94,7 @@ impl Action {
                 | Action::ReadMail { .. }
                 | Action::DraftReply { .. }
                 | Action::UseApp { .. }
+                | Action::SendMessage { .. }
                 | Action::PressButton { .. }
                 | Action::UseBrowser { .. }
                 | Action::UseTheirTab { .. }
@@ -117,6 +122,8 @@ impl Action {
             Action::GetTime => "Checking the time".into(),
             Action::RunShortcut { name, .. } => format!("Running “{}”", clip(name, 32)),
             Action::UseApp { app, .. } => format!("Using {app}"),
+            Action::SendMessage { app, to: Some(to), .. } => format!("Writing to {} in {app}", clip(to, 24)),
+            Action::SendMessage { app, to: None, .. } => format!("Writing in {app}"),
             Action::PressButton { app, name, .. } => format!("Clicking “{}” in {}", clip(name, 24), place(app)),
             Action::UseBrowser { url: Some(u), .. } => format!("Browsing {}", host_of(u)),
             Action::UseBrowser { url: None, .. } => "Using the browser".into(),
@@ -140,6 +147,7 @@ impl Action {
             Action::GetTime => "Tell the time".into(),
             Action::RunShortcut { name, .. } => format!("Run the shortcut “{}”", clip(name, 32)),
             Action::UseApp { app, task } => format!("In {app}: {}", clip(task, 40)),
+            Action::SendMessage { app, text, .. } => format!("Message in {app}: {}", clip(text, 36)),
             Action::PressButton { app, name, .. } => format!("Click “{}” in {}", clip(name, 32), place(app)),
             Action::UseBrowser { task, url: Some(u) } => format!("On {}: {}", host_of(u), clip(task, 40)),
             Action::UseBrowser { task, url: None } => format!("In the browser: {}", clip(task, 40)),
@@ -176,6 +184,7 @@ impl Action {
             Action::GetTime => "Here is the time.".into(),
             Action::RunShortcut { name, .. } => format!("I've run “{name}”."),
             Action::UseApp { app, .. } => format!("Done in {app}."),
+            Action::SendMessage { app, .. } => format!("I've written your message in {app}."),
             Action::PressButton { app, name, .. } => format!("I've clicked “{name}” in {}.", place(app)),
             Action::UseBrowser { .. } => "Done in the browser.".into(),
             Action::UseTheirTab { .. } => "Done on your page.".into(),
@@ -244,10 +253,23 @@ pub trait Hands: Send + Sync {
     fn use_app(&self, app: &str, task: &str) -> Result<Outcome, String>;
     /// Find the control by role and name in `app` and click it.
     fn press(&self, app: &str, role: &str, name: &str) -> Result<Outcome, String>;
+    /// Write `text` in a chat app, to `to` or in the newest conversation, and stop before sending (the send
+    /// button comes back as the outcome's follow-up).
+    fn send_message(&self, app: &str, to: Option<&str>, text: &str) -> Result<Outcome, String> {
+        self.use_app(app, &message_task(to, text))
+    }
     /// Whether the on-screen engine is allowed to work (macOS's Accessibility permission); `None` when it
     /// can't tell.
     fn allowed(&self) -> Option<bool> {
         None
+    }
+}
+
+/// A message to write, as a task for the step-by-step loop.
+pub fn message_task(to: Option<&str>, text: &str) -> String {
+    match to {
+        Some(to) => format!("open the conversation with {to}, write this in the message box, and stop before sending: {text}"),
+        None => format!("open the newest conversation, write this in the message box, and stop before sending: {text}"),
     }
 }
 

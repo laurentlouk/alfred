@@ -31,7 +31,7 @@ fn native_prompt(catalog: &Catalog) -> String {
         p.push_str(" The user's Shortcuts run with run_shortcut; pick the one whose name fits the request.");
     }
     if catalog.hands {
-        p.push_str(" For anything inside another app with no tool of its own (Slack, WhatsApp, archiving an email), and for writing a prompt or message in an app the user names (prompt Claude, ask ChatGPT, message someone in Slack), use use_app with the whole prompt in the task, even when the prompt asks for news or facts.");
+        p.push_str(" To write a message in a chat app (WhatsApp, Messages, Slack, Telegram), reply to the latest message there, or write a prompt in an assistant app (prompt Claude, ask ChatGPT), use send_message with the message itself in text, even when it asks for news or facts; Alfred asks before sending. For anything else inside another app with no tool of its own (reading what WhatsApp shows, archiving an email, changing a setting), use use_app.");
     }
     if catalog.browser {
         p.push_str(" For a task on websites that takes more than one step (finding something on a site, reading a page, comparing prices), and for any question or step about a page that is open, use use_browser (tab yours for the page the user is looking at, alfred for Alfred's own tab, which stays on the last site it opened); a plain search stays web_search and opening a site stays open_url.");

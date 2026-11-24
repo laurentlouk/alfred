@@ -201,6 +201,7 @@ impl Executor for MacExecutor {
                 Ok(Outcome::new(if said.is_empty() { action.done_phrase() } else { clip(said, 400) }))
             }
             Action::UseApp { app, task } => self.hands()?.use_app(app, task),
+            Action::SendMessage { app, to, text } => self.hands()?.send_message(app, to.as_deref(), text),
             Action::PressButton { app, role, name } if app == BROWSER_APP => self.web()?.press(role, name),
             Action::PressButton { app, role, name } => self.hands()?.press(app, role, name),
             Action::UseBrowser { task, url } => self.web()?.browse(task, url.as_deref()),

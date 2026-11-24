@@ -111,6 +111,18 @@ pub fn tools_json_for(catalog: &Catalog) -> Value {
             list.push(json!({
                 "type": "function",
                 "function": {
+                    "name": "send_message",
+                    "description": SEND_MESSAGE_DESCRIPTION,
+                    "parameters": { "type": "object", "properties": {
+                        "app": { "type": "string", "description": "The chat app, such as WhatsApp, Messages, Slack or Claude." },
+                        "to": { "type": "string", "description": "The person or chat, only if the user named one; empty to reply to the latest message." },
+                        "text": { "type": "string", "description": "The message itself, as it should be sent." },
+                    }, "required": ["app", "text"] },
+                }
+            }));
+            list.push(json!({
+                "type": "function",
+                "function": {
                     "name": "use_app",
                     "description": "Operate another app on screen to do something no other tool can, such as changing a setting in an app.",
                     "parameters": { "type": "object", "properties": {
@@ -137,6 +149,8 @@ pub fn tools_json_for(catalog: &Catalog) -> Value {
     }
     tools
 }
+
+const SEND_MESSAGE_DESCRIPTION: &str = "Write a message in a chat app (WhatsApp, Messages, Slack, Telegram, Signal, Discord, Teams) to someone, or reply to the latest message, or write a prompt in an assistant app such as Claude. Alfred types it and asks before sending.";
 
 const BROWSER_DESCRIPTION: &str = "Do a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices. A plain search is web_search, and opening a site is open_url.";
 
@@ -176,6 +190,7 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
         actions.push("run_shortcut");
     }
     if catalog.hands {
+        actions.push("send_message");
         actions.push("use_app");
     }
     if catalog.browser {
@@ -195,6 +210,7 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
             "reply": { "type": "string", "maxLength": 600 },
             "hard": { "type": "boolean" },
             "tab": { "type": "string", "enum": ["alfred", "yours"] },
+            "to": { "type": "string", "maxLength": 100 },
         },
         "required": ["action"],
     });
@@ -214,7 +230,8 @@ pub fn decision_guide_for(catalog: &Catalog) -> String {
         ));
     }
     if catalog.hands {
-        guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as changing a setting, or writing a prompt or message in an app the user names, like prompting Claude or messaging in Slack, even when the prompt asks for news or facts (field app: the app; field text: the task in one sentence, with the whole prompt).");
+        guide.push_str("\nsend_message: write a message in a chat app (WhatsApp, Messages, Slack, Telegram, Signal, Discord, Teams), reply to the latest message there, or write a prompt in an assistant app such as Claude, even when the prompt asks for news or facts (field app: the app; field to: the person or chat only if the user named one; field text: the message itself). Alfred asks before sending.");
+        guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as changing a setting or reading what an app shows (field app: the app; field text: the task in one sentence).");
     }
     if catalog.browser {
         guide.push_str("\nuse_browser: a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices, and any question or step about a page that is open (field text: the task in one sentence, with what the user wants from the page; field url only if the user gave the site's address; field tab: yours for the page the user is looking at, alfred for Alfred's own tab, which stays on the last site it opened). A plain search stays web_search, and opening a site stays open_url.");
@@ -371,6 +388,16 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
                 .to_string();
             let input = string_arg(&args, &["text", "input"]).filter(|t| crate::catalog::fold(t) != crate::catalog::fold(&name));
             Ok(Action::RunShortcut { name, input })
+        }
+        "send_message" | "message" | "send_chat" | "write_message" | "reply_message" | "send" if catalog.hands => {
+            let raw = string_arg(&args, &["app", "application", "service"]).ok_or("send_message needs the app's name in \"app\".")?;
+            let app = app_name(&raw).ok_or_else(|| format!("\"{raw}\" is not an app name."))?;
+            let text = string_arg(&args, &["text", "message", "body", "content"]).ok_or("send_message needs the message in \"text\".")?;
+            // A recipient only when the user named them: a model's guess would open someone else's chat.
+            let said = crate::catalog::fold(utterance);
+            let to = string_arg(&args, &["to", "recipient", "contact", "chat", "name"])
+                .filter(|t| !t.trim().is_empty() && said.contains(&crate::catalog::fold(t)));
+            Ok(Action::SendMessage { app, to, text })
         }
         "use_app" | "operate_app" | "use" if catalog.hands => {
             let raw = string_arg(&args, &["app", "name", "application"]).ok_or("use_app needs the app's name in \"app\".")?;
@@ -607,6 +634,23 @@ mod tests {
             action_from_call_in(&n, &a, "read me the top story on hacker news", &catalog()).unwrap(),
             Action::UseBrowser { task: "read the top story".into(), url: None }
         );
+    }
+
+    #[test]
+    fn a_message_keeps_only_a_recipient_the_user_named() {
+        let hands = crate::catalog::Catalog { hands: true, ..Default::default() };
+        let call = |args: Value, said: &str| action_from_call_in("send_message", &args, said, &hands).unwrap();
+        assert_eq!(
+            call(json!({"app": "whatsapp", "to": "Ada", "text": "See you at 7"}), "tell Ada on WhatsApp see you at 7"),
+            Action::SendMessage { app: "WhatsApp".into(), to: Some("Ada".into()), text: "See you at 7".into() }
+        );
+        assert_eq!(
+            call(json!({"app": "WhatsApp", "to": "Grace", "text": "On my way"}), "reply to my latest WhatsApp message saying on my way"),
+            Action::SendMessage { app: "WhatsApp".into(), to: None, text: "On my way".into() },
+            "a guessed recipient would open someone else's chat"
+        );
+        let offered = |c: &crate::catalog::Catalog| tools_json_for(c).to_string().contains("\"send_message\"");
+        assert!(offered(&hands) && !offered(&crate::catalog::Catalog::default()), "only with on-screen control");
     }
 
     #[test]

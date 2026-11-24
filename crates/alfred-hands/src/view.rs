@@ -104,28 +104,49 @@ const MESSAGE_WORDS: &[&str] = &[
 /// Words naming a send button.
 const SEND_WORDS: &[&str] = &["send", "envoyer", "enviar", "senden", "invia"];
 
+/// The places most chat-like windows share, by their short ref: the message box, the search field and the
+/// send button.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Places {
+    pub message_box: Option<(String, Element)>,
+    pub search: Option<(String, Element)>,
+    pub send: Option<(String, Element)>,
+}
+
 /// The places every chat-like window has, found among the elements shown: the message box, the search
 /// field and the send button. A window with one field besides search has it as its message box; a form
 /// with several fields gets no guess.
-fn key_places(refs: &HashMap<String, Element>) -> Vec<String> {
-    let mut shown: Vec<(&String, &Element)> = refs.iter().collect();
-    shown.sort_by_key(|(r, _)| (r.chars().next(), r[1..].parse::<u64>().unwrap_or(u64::MAX)));
-    let words = |e: &Element| -> Vec<String> { alfred_core::catalog::fold(&e.name).split_whitespace().map(str::to_string).collect() };
-    let says = |e: &Element, list: &[&str]| words(e).iter().any(|w| list.contains(&w.as_str()));
+pub fn places(refs: &HashMap<String, Element>) -> Places {
+    let shown = document_order(refs);
+    let says = |e: &Element, list: &[&str]| alfred_core::catalog::fold(&e.name).split_whitespace().any(|w| list.contains(&w));
     let role = |e: &Element| e.role.to_lowercase();
     let editable: Vec<&(&String, &Element)> = shown.iter().filter(|(_, e)| EDITABLE.contains(&role(e).as_str())).collect();
     let search = editable.iter().find(|(_, e)| role(e) == "searchfield" || says(e, SEARCH_WORDS)).map(|p| **p);
     let others: Vec<&&(&String, &Element)> = editable.iter().filter(|p| search.is_none_or(|s| s.0 != p.0)).collect();
     let message = others.iter().find(|(_, e)| says(e, MESSAGE_WORDS)).map(|p| ***p).or_else(|| (others.len() == 1).then(|| **others[0]));
     let send = shown.iter().find(|(_, e)| role(e) == "button" && says(e, SEND_WORDS)).copied();
-    let line = |label: &str, (r, e): (&String, &Element), note: &str| {
+    let owned = |p: Option<(&String, &Element)>| p.map(|(r, e)| (r.clone(), e.clone()));
+    Places { message_box: owned(message), search: owned(search), send: owned(send) }
+}
+
+/// The elements in the window's order (refs are numbered in document order).
+pub fn document_order(refs: &HashMap<String, Element>) -> Vec<(&String, &Element)> {
+    let mut shown: Vec<(&String, &Element)> = refs.iter().collect();
+    shown.sort_by_key(|(r, _)| (r.chars().next(), r[1..].parse::<u64>().unwrap_or(u64::MAX)));
+    shown
+}
+
+/// The `KEY PLACES` lines for the model.
+fn key_places(refs: &HashMap<String, Element>) -> Vec<String> {
+    let found = places(refs);
+    let line = |label: &str, (r, e): &(String, Element), note: &str| {
         let name = if e.name.is_empty() { String::new() } else { format!(" \"{}\"", clip(&e.name)) };
         format!(" {label}: {r} {}{name}{note}", e.role)
     };
     let mut out = Vec::new();
-    out.extend(message.map(|m| line("message box", m, " (to write, type into it)")));
-    out.extend(search.map(|s| line("search", s, "")));
-    out.extend(send.map(|s| line("send button", s, " (it sends; Alfred asks the user first)")));
+    out.extend(found.message_box.as_ref().map(|m| line("message box", m, " (to write, type into it)")));
+    out.extend(found.search.as_ref().map(|s| line("search", s, "")));
+    out.extend(found.send.as_ref().map(|s| line("send button", s, " (it sends; Alfred asks the user first)")));
     out
 }
 
