@@ -2,6 +2,7 @@
 //! fluid orb, a field to type or talk, and the latest exchange. A global shortcut, the Dock icon or ⌘Tab
 //! bring it forward.
 
+mod gate;
 mod gfx;
 pub mod orb;
 mod scenes;
@@ -22,8 +23,6 @@ use crate::workers::{self, BrainJob, Links, VoiceJob};
 
 pub const SIZE: (f32, f32) = (300.0, 480.0);
 const MAX_TURNS: usize = 3;
-/// A recording is "voice" above this meter level (0 to 1).
-const VOICE_LEVEL: f32 = 0.16;
 /// How often the live text is brought up to date while the user speaks, in seconds.
 const PEEK_EVERY: f64 = 0.6;
 
@@ -61,6 +60,8 @@ struct Listen {
     started: f64,
     last_voice: f64,
     heard: bool,
+    /// Tells the user's voice from the room's noise.
+    gate: gate::NoiseGate,
 }
 
 struct Speech {
@@ -216,7 +217,8 @@ impl Ui {
         std::fs::create_dir_all(config::cache_dir()).ok();
         let recorder = Recorder::to_file(path).format(RecordFormat::Wav).sample_rate(16_000).channels(1);
         recorder.start();
-        self.listen = Some(Listen { recorder, started: self.clock, last_voice: self.clock, heard: false });
+        self.listen =
+            Some(Listen { recorder, started: self.clock, last_voice: self.clock, heard: false, gate: gate::NoiseGate::new(self.clock) });
         self.typed = self.input.text.trim().to_string();
         self.peeking = false;
         self.last_peek = self.clock;
@@ -454,11 +456,12 @@ fn poll(s: &mut Ui, t: f64, tx: &mut Tx) -> bool {
             let mut level = 0.0;
             if let Some(l) = s.listen.as_mut() {
                 level = l.recorder.level().meter();
-                if level > VOICE_LEVEL {
+                if l.gate.feed(t, level) {
                     l.heard = true;
                     l.last_voice = t;
                 }
-                stop = (l.heard && t - l.last_voice > silence) || t - l.started > longest;
+                // Done when the user stops talking, when nobody spoke at all, or at the longest a request may run.
+                stop = (l.heard && t - l.last_voice > silence) || (!l.heard && t - l.started > gate::NO_SPEECH) || t - l.started > longest;
             }
             if stop {
                 s.stop_listening(tx);
