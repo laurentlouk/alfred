@@ -15,6 +15,7 @@ pub mod record;
 pub mod router;
 pub mod tools;
 
+pub use action::FoundVideo;
 pub use action::{Action, DryRun, Executor, Hands, Outcome, Risk};
 pub use agent::{Agent, Done, Event, Source, Turn};
 pub use catalog::Catalog;

@@ -69,6 +69,7 @@ pub fn route_with(text: &str, catalog: &Catalog) -> Option<Route> {
         .or_else(|| mail(&t, text))
         .or_else(|| note(&t))
         .or_else(|| reminder(&t))
+        .or_else(|| cards::route(&t, text, catalog))
         .or_else(|| search(&t))
         .or_else(|| quit(&t))
         .or_else(|| open(&t))
@@ -672,7 +673,7 @@ fn search(t: &str) -> Option<Route> {
 
 /// Words that point at something on a page ("the second story", "the first link", "this site", "here").
 /// The router doesn't know which page the user is on; the model does, so these are left to it.
-fn points_at_a_page(words: &str) -> bool {
+pub(crate) fn points_at_a_page(words: &str) -> bool {
     const PLACES: &[&str] =
         &["this site", "this page", "this website", "this tab", "on it", "here", "ce site", "cette page", "cet onglet", "ici"];
     const ORDINALS: &[&str] = &[
@@ -806,6 +807,9 @@ fn trailing_browser_for_link(s: &str) -> (&str, Option<String>) {
     }
     (s, None)
 }
+
+#[path = "router_cards.rs"]
+mod cards;
 
 #[cfg(test)]
 #[path = "router_tests.rs"]

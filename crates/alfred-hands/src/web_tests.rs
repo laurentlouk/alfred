@@ -35,6 +35,8 @@ struct WebState {
     ddg_check: bool,
     /// Google's results have no weather card, only links.
     no_card: bool,
+    /// YouTube shows its cookie wall until it is declined.
+    youtube_consent: bool,
     /// The window is on screen.
     visible: bool,
     /// The user's own Chrome: Alfred works in a tab of its own.
@@ -153,6 +155,23 @@ impl WebState {
                 "Paris - BBC Weather",
                 "# Paris - BBC Weather\n\nSee the forecast for the week ahead.".to_string(),
             ),
+            "youtube" => (
+                snapshot(&[
+                    ("link", "Shorts", "e9", " [ref=e9, url=https://www.youtube.com/shorts/]"),
+                    ("generic", "6:30How transformers work", "e22", ""),
+                    ("  heading", "How transformers work 6 minutes et 30 secondes", "e64", " [level=3, ref=e64]"),
+                    ("    link", "How transformers work 6 minutes et 30 secondes", "e115", " [ref=e115, url=https://www.youtube.com/watch?v=UchitHGF4n8&pp=x]"),
+                    ("  link", "The Engineering Mindset", "e176", " [ref=e176, url=https://www.youtube.com/@EngineeringMindset]"),
+                ]),
+                "how transformers work - YouTube",
+                "how transformers work\n\nThe Engineering Mindset".to_string(),
+            ),
+            "youtube-empty" => (snapshot(&[("link", "Shorts", "e9", " [ref=e9, url=https://www.youtube.com/shorts/]")]), "YouTube", String::new()),
+            "youtube-consent" => (
+                snapshot(&[("button", "Tout refuser", "e1", ""), ("button", "Tout accepter", "e2", "")]),
+                "Avant d'accéder à YouTube",
+                "Avant d'accéder à YouTube\n\nNous utilisons des cookies et des données".to_string(),
+            ),
             "sorry-ddg" => (
                 snapshot(&[("button", "Submit", "e70", "")]),
                 "DuckDuckGo",
@@ -243,6 +262,16 @@ impl Browser for FakeWeb {
                 }
                 Ok(json!({"url": url}))
             }
+            ["open", url] if url.starts_with("https://www.youtube.com/results?search_query=") => {
+                if s.youtube_consent {
+                    s.go("youtube-consent", "https://consent.youtube.com/m?continue=https://www.youtube.com/results");
+                } else if url.ends_with("nothing+at+all") {
+                    s.go("youtube-empty", url);
+                } else {
+                    s.go("youtube", url);
+                }
+                Ok(json!({"url": url}))
+            }
             ["open", url] if url.starts_with("https://duckduckgo.com/?q=") => {
                 if s.ddg_check {
                     s.go("sorry-ddg", url);
@@ -275,6 +304,10 @@ impl Browser for FakeWeb {
                 }
                 if *r == "@e370" {
                     s.go("article", "https://en.wikipedia.org/wiki/Simula");
+                }
+                if s.page == "youtube-consent" && *r == "@e1" {
+                    s.youtube_consent = false;
+                    s.go("youtube", "https://www.youtube.com/results?search_query=how+transformers+work");
                 }
                 if s.page == "consent" && *r == "@e1" {
                     s.consent_wall = false;
@@ -681,6 +714,35 @@ fn not_found() -> Result<ModelReply, LlmError> {
 
 fn page_now(web: &Shared) -> String {
     web.0.state.lock().unwrap().page.clone()
+}
+
+#[test]
+fn a_video_is_read_off_youtubes_results_with_no_model_call() {
+    let web = Shared::default();
+    let (h, model) = answering(&web, vec![]);
+    let v = h.find_video("how transformers work").unwrap();
+    assert_eq!(
+        v,
+        alfred_core::FoundVideo {
+            title: "How transformers work".into(),
+            channel: "The Engineering Mindset".into(),
+            url: "https://www.youtube.com/watch?v=UchitHGF4n8".into(),
+        }
+    );
+    assert!(web.log().iter().any(|c| c[0] == "open" && c[1] == "https://www.youtube.com/results?search_query=how+transformers+work"));
+    assert_eq!(page_now(&web), "youtube", "the results stay in Alfred's tab");
+    assert!(model.seen.lock().unwrap().is_empty(), "no model call");
+}
+
+#[test]
+fn youtubes_cookie_wall_is_turned_down_and_empty_results_are_said() {
+    let web = Shared::default();
+    web.0.state.lock().unwrap().youtube_consent = true;
+    let (h, _) = answering(&web, vec![]);
+    assert_eq!(h.find_video("how transformers work").unwrap().channel, "The Engineering Mindset");
+    assert!(web.clicked("@e1") && !web.clicked("@e2"), "declined, never accepted");
+    let e = h.find_video("nothing at all").unwrap_err();
+    assert_eq!(e, "I couldn't find a video about “nothing at all” on YouTube.");
 }
 
 #[test]

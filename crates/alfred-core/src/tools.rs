@@ -8,7 +8,7 @@
 
 use serde_json::{Value, json};
 
-use crate::action::{Action, host_of};
+use crate::action::{Action, MusicCommand, host_of};
 use crate::catalog::Catalog;
 use crate::normalize::{app_name, browser_name, capitalize, site_url, title_from, url};
 
@@ -82,6 +82,27 @@ pub const TOOLS: &[ToolSpec] = &[
             p("from", "string", "Only if the user names the sender of the email to answer.", false),
         ],
     },
+    ToolSpec {
+        name: "search_mail",
+        description: "Find emails in Mail's inbox by what they are about or who sent them, and say the newest.",
+        params: &[
+            p("query", "string", "Words from the subject, such as \"invoice\".", false),
+            p("from", "string", "Only if the user names the sender: part of their name or address.", false),
+        ],
+    },
+    ToolSpec {
+        name: "music",
+        description: "Play, pause or skip music in Apple Music, play a playlist, song, artist or album, say what's playing, or list the user's playlists.",
+        params: &[
+            p("command", "string", "One of play, pause, next, previous, now_playing, playlists.", true),
+            p("text", "string", "What to play, only if the user named it: a playlist, song, artist or album.", false),
+        ],
+    },
+    ToolSpec {
+        name: "find_video",
+        description: "Find a new video on YouTube that explains or shows a topic, and play it. Not for a video on a page that is already open.",
+        params: &[p("query", "string", "What the video should be about, in a few words.", true)],
+    },
 ];
 
 /// The `tools` array in the shape Ollama and OpenAI-compatible servers both accept.
@@ -132,6 +153,19 @@ pub fn tools_json_for(catalog: &Catalog) -> Value {
                 }
             }));
         }
+        if catalog.claude {
+            list.push(json!({
+                "type": "function",
+                "function": {
+                    "name": "claude_code",
+                    "description": CLAUDE_CODE_DESCRIPTION,
+                    "parameters": { "type": "object", "properties": {
+                        "text": { "type": "string", "description": "The prompt, as the user wants it sent to Claude Code." },
+                        "folder": { "type": "string", "description": "The project or folder, only if the user named one." },
+                    }, "required": ["text"] },
+                }
+            }));
+        }
         if catalog.browser {
             list.push(json!({
                 "type": "function",
@@ -152,7 +186,9 @@ pub fn tools_json_for(catalog: &Catalog) -> Value {
 
 const SEND_MESSAGE_DESCRIPTION: &str = "Write a message in a chat app (WhatsApp, Messages, Slack, Telegram, Signal, Discord, Teams) to someone, or reply to the latest message, or write a prompt in an assistant app such as Claude. Alfred types it and asks before sending.";
 
-const BROWSER_DESCRIPTION: &str = "Do a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices. A plain search is web_search, and opening a site is open_url.";
+const CLAUDE_CODE_DESCRIPTION: &str = "Start a new Claude Code session with a prompt, for coding work in a project: fixing, building, reviewing or explaining code. The prompt waits for the user to send it.";
+
+const BROWSER_DESCRIPTION: &str = "Do a task on websites that needs more than one step, such as finding something on a site, reading a page, going through several results or comparing prices. A plain search is web_search, and opening a site is open_url.";
 
 fn base_tools_json() -> Value {
     Value::Array(
@@ -193,6 +229,9 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
         actions.push("send_message");
         actions.push("use_app");
     }
+    if catalog.claude {
+        actions.push("claude_code");
+    }
     if catalog.browser {
         actions.push("use_browser");
     }
@@ -211,6 +250,8 @@ pub fn decision_schema_for(catalog: &Catalog) -> Value {
             "hard": { "type": "boolean" },
             "tab": { "type": "string", "enum": ["alfred", "yours"] },
             "to": { "type": "string", "maxLength": 100 },
+            "command": { "type": "string", "enum": ["play", "pause", "next", "previous", "now_playing", "playlists"] },
+            "folder": { "type": "string", "maxLength": 100 },
         },
         "required": ["action"],
     });
@@ -233,6 +274,9 @@ pub fn decision_guide_for(catalog: &Catalog) -> String {
         guide.push_str("\nsend_message: write a message in a chat app (WhatsApp, Messages, Slack, Telegram, Signal, Discord, Teams), reply to the latest message there, or write a prompt in an assistant app such as Claude, even when the prompt asks for news or facts (field app: the app; field to: the person or chat only if the user named one; field text: the message itself). Alfred asks before sending.");
         guide.push_str("\nuse_app: do something inside another app on screen when no action above fits, such as changing a setting or reading what an app shows (field app: the app; field text: the task in one sentence).");
     }
+    if catalog.claude {
+        guide.push_str("\nclaude_code: start a Claude Code session with a prompt for coding work in a project, such as fixing, building, reviewing or explaining code (field text: the prompt as the user wants it sent; field folder: the project or folder only if the user named one).");
+    }
     if catalog.browser {
         guide.push_str("\nuse_browser: a task on websites that needs more than one step, such as finding something on a site, reading a page or comparing prices, and any question or step about a page that is open (field text: the task in one sentence, with what the user wants from the page; field url only if the user gave the site's address; field tab: yours for the page the user is looking at, alfred for Alfred's own tab, which stays on the last site it opened). A plain search stays web_search, and opening a site stays open_url.");
     }
@@ -249,6 +293,9 @@ web_search: search the web, or answer a question that needs current or online in
 open_url: open a website (field url).
 read_mail: the user asks about their email or inbox (field from only if they name a sender).
 reply_mail: answer the newest email (field text: what the reply says; field from only if they name a sender).
+search_mail: find emails by what they are about or who sent them (field query: words from the subject; field from: the sender only if they name one).
+music: play, pause or skip music in Apple Music, play a playlist, song, artist or album, say what's playing or who sings it, or list the playlists (field command: play, pause, next, previous, now_playing or playlists; field text: what to play, only if the user named it).
+find_video: find a new video on YouTube that explains or shows a topic, and play it (field query: the topic in a few words). A video on a page that is open (“the first video”, “this video”) is not this: it is a step on that page.
 get_time: the user asks the local time, the date or the day (the time in another city is web_search).
 chat: anything else; answer in one or two short sentences in field reply, and set hard to true when a good answer needs reasoning (a calculation, logic, a plan, a comparison, or explaining how or why).";
 
@@ -399,6 +446,44 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
                 .filter(|t| !t.trim().is_empty() && said.contains(&crate::catalog::fold(t)));
             Ok(Action::SendMessage { app, to, text })
         }
+        "search_mail" | "find_mail" | "find_email" | "find_emails" | "search_email" | "search_emails" | "search_inbox" => {
+            let query = string_arg(&args, &["query", "q", "subject", "about", "text", "keywords"]);
+            let from = string_arg(&args, &["from", "sender", "who"]);
+            if query.is_none() && from.is_none() {
+                return Err("search_mail needs words from the subject in \"query\" or a sender in \"from\".".into());
+            }
+            Ok(Action::SearchMail { query, from })
+        }
+        "music" | "play_music" | "apple_music" | "play" | "pause_music" | "stop_music" | "next_track" | "previous_track"
+        | "now_playing" | "playlists" | "list_playlists" | "play_playlist" | "play_song" => {
+            let command = string_arg(&args, &["command", "action", "do", "control"])
+                .and_then(|c| MusicCommand::from_word(&c))
+                .or_else(|| MusicCommand::from_word(name.trim_end_matches("_music")))
+                .unwrap_or(MusicCommand::Play);
+            let what = string_arg(&args, &["text", "what", "query", "song", "playlist", "artist", "album", "name", "title"])
+                .filter(|w| command == MusicCommand::Play && !is_just_music(w));
+            Ok(Action::Music { command, what })
+        }
+        "find_video" | "youtube" | "video" | "search_youtube" | "youtube_search" | "play_video" | "find_youtube_video" => {
+            // "Play the first video" is a step on the page that is open, not a new search.
+            if catalog.browser && crate::router::points_at_a_page(utterance) {
+                return Err("The user means a video on the page that is open: use use_browser on that page instead.".into());
+            }
+            let query = string_arg(&args, &["query", "q", "text", "topic", "search", "about"])
+                .or_else(|| (!utterance.trim().is_empty()).then(|| utterance.trim().to_string()))
+                .ok_or("find_video needs the topic in \"query\".")?;
+            Ok(Action::FindVideo { query })
+        }
+        "claude_code" | "ask_claude_code" | "claude" | "start_claude_code" | "open_claude_code" if catalog.claude => {
+            let prompt = string_arg(&args, &["text", "prompt", "message", "task", "query"])
+                .or_else(|| (!utterance.trim().is_empty()).then(|| utterance.trim().to_string()))
+                .ok_or("claude_code needs the prompt in \"text\".")?;
+            // A folder only when the user named it: a model's guess would open the wrong project.
+            let said = crate::catalog::fold(utterance);
+            let folder = string_arg(&args, &["folder", "project", "repo", "repository", "directory", "dir"])
+                .filter(|f| !crate::catalog::fold(f).is_empty() && said.contains(&crate::catalog::fold(f)));
+            Ok(Action::ClaudeCode { prompt, folder })
+        }
         "use_app" | "operate_app" | "use" if catalog.hands => {
             let raw = string_arg(&args, &["app", "name", "application"]).ok_or("use_app needs the app's name in \"app\".")?;
             let app = app_name(&raw).ok_or_else(|| format!("\"{raw}\" is not an app name."))?;
@@ -430,6 +515,26 @@ pub fn action_from_call_in(name: &str, raw_args: &Value, utterance: &str, catalo
             TOOLS.iter().map(|t| t.name).collect::<Vec<_>>().join(", ")
         )),
     }
+}
+
+/// "music", "some music", "a song": what to play when nothing in particular was named.
+pub fn is_just_music(what: &str) -> bool {
+    const ANY: &[&str] = &[
+        "music",
+        "some music",
+        "the music",
+        "my music",
+        "a song",
+        "some songs",
+        "songs",
+        "a track",
+        "something",
+        "anything",
+        "de la musique",
+        "musique",
+        "la musique",
+    ];
+    ANY.contains(&crate::catalog::fold(what).as_str())
 }
 
 /// A starting address for the browser, kept only when it comes from the user's words: an http(s) address
@@ -465,6 +570,48 @@ fn says_host(said: &str, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_model_reaches_the_app_cards_but_can_never_send_a_text_itself() {
+        let c = Catalog { claude: true, ..Catalog::default() };
+        let call = |name: &str, args: Value, said: &str| action_from_call_in(name, &args, said, &c);
+        assert_eq!(
+            call("music", json!({"command": "play", "text": "my running playlist"}), "put my running playlist on").unwrap(),
+            Action::Music { command: MusicCommand::Play, what: Some("my running playlist".into()) }
+        );
+        assert_eq!(call("pause_music", json!({}), "hush").unwrap(), Action::Music { command: MusicCommand::Pause, what: None });
+        assert_eq!(
+            call("music", json!({"command": "play", "text": "some music"}), "music please").unwrap(),
+            Action::Music { command: MusicCommand::Play, what: None }
+        );
+        assert_eq!(
+            call("music", json!({"command": "next", "text": "Daft Punk"}), "next").unwrap(),
+            Action::Music { command: MusicCommand::Next, what: None },
+            "only play takes something to play"
+        );
+        assert_eq!(
+            call("search_mail", json!({"query": "invoice"}), "any invoices?").unwrap(),
+            Action::SearchMail { query: Some("invoice".into()), from: None }
+        );
+        assert!(call("search_mail", json!({}), "emails").is_err());
+        assert_eq!(call("find_video", json!({"query": "black holes"}), "x").unwrap(), Action::FindVideo { query: "black holes".into() });
+        assert_eq!(
+            call("claude_code", json!({"text": "Fix the tests", "folder": "alfred"}), "ask claude code to fix the tests in alfred")
+                .unwrap(),
+            Action::ClaudeCode { prompt: "Fix the tests".into(), folder: Some("alfred".into()) }
+        );
+        assert_eq!(
+            call("claude_code", json!({"text": "Fix the tests", "folder": "secret-project"}), "ask claude code to fix the tests").unwrap(),
+            Action::ClaudeCode { prompt: "Fix the tests".into(), folder: None },
+            "a folder the user never named is dropped"
+        );
+        assert!(action_from_call("claude_code", &json!({"text": "x"}), "x").is_err(), "offered only with Claude installed");
+        let web = Catalog { browser: true, ..c.clone() };
+        let e = action_from_call_in("find_video", &json!({"query": "first video"}), "play the first video", &web).unwrap_err();
+        assert!(e.contains("use_browser"), "a video on the open page is a step there: {e}");
+        let text = json!({"name": "Ada", "label": "mobile", "handle": "+33612345678", "text": "hi"});
+        assert!(call("send_text", text, "text Ada hi").is_err(), "only a found contact's confirmation sends");
+    }
 
     #[test]
     fn questions_about_the_world_now_go_to_web_search() {
@@ -565,7 +712,7 @@ mod tests {
     }
 
     fn catalog() -> Catalog {
-        Catalog { shortcuts: vec!["Focus Timer".into(), "démarre la musique".into()], hands: true, browser: true }
+        Catalog { shortcuts: vec!["Focus Timer".into(), "démarre la musique".into()], hands: true, browser: true, claude: true }
     }
 
     fn browse(args: Value, said: &str) -> Result<Action, String> {

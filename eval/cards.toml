@@ -1,0 +1,129 @@
+# The app cards: Music, texts through Messages, searching Mail, YouTube videos and Claude Code.
+#   alfred eval eval/cards.toml            the router's share
+#   alfred eval --model eval/cards.toml    and the model's, for the looser phrasings
+
+[catalog]
+hands = true
+browser = true
+claude = true
+
+# --- everyday phrasings: the router runs them ---------------------------------------------------------
+[[case]]
+text = "play my running playlist"
+tool = "music"
+expect = { command = "play", what = "running" }
+
+[[case]]
+text = "pause the music"
+tool = "music"
+expect = { command = "pause" }
+
+[[case]]
+text = "next song"
+tool = "music"
+expect = { command = "next" }
+
+[[case]]
+text = "what's playing?"
+tool = "music"
+expect = { command = "now_playing" }
+
+[[case]]
+text = "what playlists do I have?"
+tool = "music"
+expect = { command = "playlists" }
+
+[[case]]
+text = "text Ada that I'm running late"
+tool = "send_message"
+expect = { app = "Messages", to = "Ada", text = "running late" }
+
+[[case]]
+text = "find emails about the invoice"
+tool = "search_mail"
+expect = { query = "invoice" }
+
+[[case]]
+text = "do I have any emails from Free?"
+tool = "search_mail"
+expect = { from = "free" }
+
+[[case]]
+text = "find a video explaining how transformers work"
+tool = "find_video"
+expect = { query = "transformers" }
+
+[[case]]
+text = "on YouTube, find an explanation of quantum entanglement"
+tool = "find_video"
+expect = { query = "quantum entanglement" }
+
+[[case]]
+text = "ask claude code to fix the failing tests in the alfred project"
+tool = "claude_code"
+expect = { prompt = "failing tests", folder = "alfred" }
+
+[[case]]
+text = "ask Claude to summarize today's AI news"
+tool = "send_message"
+expect = { app = "Claude", text = "AI news" }
+
+# --- looser words: the model must pick the card --------------------------------------------------------
+[[case]]
+text = "I want to hear some Daft Punk"
+tool = "music"
+expect = { command = "play", what = "daft punk" }
+
+[[case]]
+text = "turn the music off"
+tool = "music"
+expect = { command = "pause" }
+
+[[case]]
+text = "skip to the next one"
+tool = "music"
+expect = { command = "next" }
+
+[[case]]
+text = "who is this singer?"
+tool = "music"
+expect = { command = "now_playing" }
+
+[[case]]
+text = "did the plumber send me anything about the quote?"
+tool = "search_mail"
+
+[[case]]
+text = "is there an email from my bank in my inbox?"
+tool = "search_mail"
+expect = { from = "bank" }
+
+[[case]]
+text = "I'd like to understand how vaccines work, show me a video"
+tool = "find_video"
+expect = { query = "vaccin" }
+
+[[case]]
+text = "what's a good video to learn rust lifetimes?"
+tool = "find_video"
+expect = { query = "lifetimes" }
+
+[[case]]
+text = "send Ada a text saying I'll be 10 minutes late"
+tool = "send_message"
+expect = { app = "Messages", to = "Ada" }
+
+[[case]]
+text = "let mum know by SMS that I've landed"
+tool = "send_message"
+expect = { app = "Messages", to = "mum" }
+
+[[case]]
+text = "have Claude Code write unit tests for the parser"
+tool = "claude_code"
+expect = { prompt = "unit tests" }
+
+[[case]]
+text = "start a coding session to refactor the router in my alfred repo"
+tool = "claude_code"
+expect = { folder = "alfred" }

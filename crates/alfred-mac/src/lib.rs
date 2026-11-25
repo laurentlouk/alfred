@@ -4,8 +4,11 @@
 //! `on run argv`, and the inputs travel as separate process arguments, so a note body such as
 //! `" & do shell script "…` is just text.
 
+pub mod claude;
 pub mod focus;
 pub mod mail;
+pub mod messages;
+pub mod music;
 pub mod permissions;
 pub mod shortcuts;
 
@@ -16,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alfred_core::action::{BROWSER_APP, WebHands};
-use alfred_core::normalize::search_url;
+use alfred_core::normalize::{search_url, youtube_search_url};
 use alfred_core::{Action, Executor, Hands, Outcome};
 
 /// Runs actions for real on this Mac.
@@ -41,6 +44,8 @@ pub struct MacExecutor {
     pub check_accessibility: bool,
     /// macOS's own permission dialog was shown already: the next time, System Settings opens instead.
     asked_accessibility: Arc<std::sync::atomic::AtomicBool>,
+    /// Where Claude Code sessions open, and where projects are looked for.
+    pub claude: claude::ClaudeSettings,
 }
 
 impl Default for MacExecutor {
@@ -55,6 +60,7 @@ impl Default for MacExecutor {
             web: None,
             check_accessibility: false,
             asked_accessibility: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            claude: claude::ClaudeSettings::default(),
         }
     }
 }
@@ -65,6 +71,14 @@ impl MacExecutor {
             search_engine: c.search.engine.clone(),
             browser: Some(c.search.browser.trim().to_string()).filter(|b| !b.is_empty()),
             check_accessibility: true,
+            claude: claude::ClaudeSettings {
+                opens_in: if c.claude.opens_in.trim().eq_ignore_ascii_case("terminal") {
+                    claude::OpensIn::Terminal
+                } else {
+                    claude::OpensIn::Desktop
+                },
+                roots: c.claude.folders.iter().map(PathBuf::from).collect(),
+            },
             ..Self::default()
         }
     }
@@ -207,7 +221,26 @@ impl Executor for MacExecutor {
                 self.web()?.browse_theirs(task, &url)
             }
             Action::UseApp { app, task } => self.hands()?.use_app(app, task),
+            // Claude's own links fill the prompt in a new chat or Claude Code session, faster and surer
+            // than typing into its window.
+            Action::SendMessage { app, text, .. } if is_claude_code(app) => claude::open_code(text, None, &self.claude, self.timeout),
+            Action::SendMessage { app, text, .. } if is_claude(app) => claude::open_chat(text, self.timeout),
+            // Messages finds the person in Contacts and asks before sending; someone Contacts doesn't know
+            // is looked for in Messages' own list, on screen.
+            Action::SendMessage { app, to: Some(to), text } if app == "Messages" => match messages::find(to, text, self.timeout) {
+                Ok(messages::Found::One(send)) => Ok(Outcome::new("").with_follow_up(send)),
+                Ok(messages::Found::Several(names)) => Ok(Outcome::new(messages::several(to, &names))),
+                Ok(messages::Found::NoHandle(name)) => Err(format!("{name} has no number or address in your contacts.")),
+                Ok(messages::Found::Nobody) if self.hands.is_some() => self.hands()?.send_message(app, Some(to), text),
+                Ok(messages::Found::Nobody) => Err(format!("I couldn't find {to} in your contacts.")),
+                Err(e) if self.hands.is_some() => self.hands()?.send_message(app, Some(to), text).map_err(|_| e),
+                Err(e) => Err(e),
+            },
             Action::SendMessage { app, to, text } => self.hands()?.send_message(app, to.as_deref(), text),
+            Action::SendText { handle, text, .. } => {
+                messages::send(handle, text, self.timeout)?;
+                Ok(Outcome::new(action.done_phrase()))
+            }
             Action::PressButton { app, role, name } if app == BROWSER_APP => self.web()?.press(role, name),
             Action::PressButton { app, role, name } => self.hands()?.press(app, role, name),
             Action::UseBrowser { task, url } => self.web()?.browse(task, url.as_deref()),
@@ -222,6 +255,21 @@ impl Executor for MacExecutor {
             }
             Action::ReadMail { from } => mail::read(from.as_deref(), self.timeout),
             Action::DraftReply { from, text } => mail::reply(from.as_deref(), text, self.timeout),
+            Action::SearchMail { query, from } => mail::search(query.as_deref(), from.as_deref(), self.timeout),
+            Action::Music { command, what } => music::run_command(*command, what.as_deref(), self.timeout),
+            Action::ClaudeCode { prompt, folder } => claude::open_code(prompt, folder.as_deref(), &self.claude, self.timeout),
+            // Alfred's browser reads YouTube's results; the video plays in the user's browser, where they are
+            // signed in. Without it, or when the results can't be read, the results open there instead.
+            Action::FindVideo { query } => {
+                if let Some(web) = &self.web
+                    && let Ok(video) = web.find_video(query)
+                {
+                    self.open_in_browser(&video.url, None)?;
+                    return Ok(Outcome::new(video.summary()));
+                }
+                self.open_in_browser(&youtube_search_url(query), None)?;
+                Ok(Outcome::new(format!("I've opened YouTube's videos about “{query}”.")))
+            }
             Action::GetTime => {
                 let mut cmd = Command::new("date");
                 cmd.arg("+%H:%M on %A %-d %B");
@@ -236,6 +284,15 @@ impl Executor for MacExecutor {
         let alfred_site = self.web.as_ref().and_then(|w| w.page());
         alfred_core::context::Context::new(app.as_deref(), site.as_deref(), alfred_site.as_deref())
     }
+}
+
+/// The Claude app, by any of the names a request gives it.
+fn is_claude(app: &str) -> bool {
+    matches!(alfred_core::catalog::fold(app).as_str(), "claude" | "claude app" | "claude desktop" | "claude ai")
+}
+
+fn is_claude_code(app: &str) -> bool {
+    alfred_core::catalog::fold(app) == "claude code"
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -442,6 +499,11 @@ mod tests {
             self.asked.lock().unwrap().push(format!("answer {query}"));
             self.answer.clone().map(Outcome::new).ok_or_else(|| "robot check".to_string())
         }
+
+        fn find_video(&self, query: &str) -> Result<alfred_core::FoundVideo, String> {
+            self.asked.lock().unwrap().push(format!("video {query}"));
+            Ok(alfred_core::FoundVideo { title: "T".into(), channel: "C".into(), url: "https://www.youtube.com/watch?v=abc".into() })
+        }
     }
 
     /// An executor whose own browser can't be found, so a fallback to it fails instead of opening a window.
@@ -493,6 +555,21 @@ mod tests {
         // No hands at all: today's behaviour, the results open in the browser.
         let plain = MacExecutor { browser: Some("Definitely Not A Browser 7f3a".into()), ..MacExecutor::default() };
         assert!(plain.execute(&Action::WebSearch { query: "rune".into(), browser: None }).is_err());
+    }
+
+    #[test]
+    fn a_video_found_by_alfreds_browser_plays_in_the_users_browser() {
+        // The configured browser doesn't exist here: the error shows the video was being opened there.
+        let web = Arc::new(FakeWeb::default());
+        let e = with_web(web.clone()).execute(&Action::FindVideo { query: "transformers".into() }).unwrap_err();
+        assert!(e.contains("Definitely Not A Browser 7f3a") || e.contains("Unable to find"), "{e}");
+        assert_eq!(*web.asked.lock().unwrap(), ["video transformers"]);
+    }
+
+    #[test]
+    fn claude_is_known_by_its_names() {
+        assert!(is_claude("Claude") && is_claude("claude app") && !is_claude("Claude Code"));
+        assert!(is_claude_code("Claude Code") && is_claude_code("claude-code") && !is_claude_code("Code"));
     }
 
     #[test]

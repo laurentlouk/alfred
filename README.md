@@ -17,8 +17,9 @@ Summon it, say or type what you need, and it opens your apps, saves notes, adds 
 - **Just say "Alfred".** "Alfred, what time is it?" works from across the room, like "Hey Siri" (turn on `wake_word`); the mic button turns that listening off, and the microphone with it, and back on. Or press <kbd>⌘L</kbd> and speak. Your words appear as you say them, background noise is cleaned out, and Alfred answers about half a second after you stop. Say "Alfred" while it talks to cut it short.
 - **A conversation, not commands.** After Alfred answers something you said, it keeps listening for 30 seconds: say the next thing without "Alfred", and each exchange starts the 30 seconds again. "Alfred, stop" ends it. While Alfred is talking, only "Alfred" interrupts.
 - **It does things.** Opens and quits apps, saves notes in Notes, adds reminders, searches the web, opens links, tells the time.
+- **It knows your apps' shortcuts in.** "Play my running playlist", "next song", "text Ada that I'm late", "find emails about the invoice", "find a video explaining how transformers work", "ask Claude Code to fix the failing tests in the alfred project": each goes straight through the app's own commands or links, in a second or two, with no clicking around.
 - **It answers from the web.** "What's the weather in Paris?" opens the results in Alfred's own browser tab, reads them, and tells you; when they don't say, it keeps looking, as you would.
-- **It knows where you are.** Alfred sees which app you're in and, in a browser, which site, so "this page", "here" and follow-ups just work: "go to the Pokémon website", then "what Pokémon do you see?", then "open the Pokédex and tell me the first one". "Prompt Claude for me: …" writes it in Claude.
+- **It knows where you are.** Alfred sees which app you're in and, in a browser, which site, so "this page", "here" and follow-ups just work: "go to the Pokémon website", then "what Pokémon do you see?", then "open the Pokédex and tell me the first one".
 - **It thinks when it has to.** "Good evening" is answered at once; "I save 150 euros a month, when do I reach 2,000?" is thought through first.
 - **It reads your mail and drafts replies.** "Read my last email", "reply to it saying I'll be there at 3": the reply opens in Mail for you to check and send. Alfred never sends mail.
 - **It runs your Shortcuts.** "Run Good Morning", or just "start the vacuum" when you have a shortcut for it.
@@ -179,6 +180,16 @@ Measured on an M1 Max with 64 GB: three live Wikipedia tasks answered in 38 to 4
 
 ## Reaching other apps
 
+**The fastest way into each app.** Where an app offers its own commands or links, Alfred uses them instead of working through the app's window, which is slower and less sure. Everyday phrasings run with no model call at all.
+
+- **Music.** "Play my running playlist", "play Daft Punk", "play Discovery by Daft Punk", "pause the music", "next song", "what's playing?", "what playlists do I have?". A playlist of that name comes first, then a song, an artist or an album in your library. Something not in your library opens Apple Music's search for it, since a script can't play from Apple Music's catalogue. Pausing or skipping never starts Music.
+- **Texts.** "Text Ada that I'm running late", "send an SMS to mum: on my way!". Alfred finds the person in Contacts (a mobile number first), then asks you: "Shall I text Ada Lovelace's mobile: “I'm running late”?". Only your yes sends it, to your existing conversation with that number (so an SMS conversation stays SMS), or else over iMessage. Several people match: Alfred names them. Nobody matches: it looks in Messages' own list, on screen.
+- **Finding emails.** "Find emails about the invoice", "do I have any emails from Free?", "find the emails from Ada about lunch": the newest matches in every account's inbox, by subject and sender, said with who sent them and when.
+- **YouTube.** "Find a video explaining how transformers work", "on YouTube, find an explanation of quantum entanglement", "play lofi beats on YouTube". Alfred's browser reads YouTube's results (never a Short or an ad) and the first video plays in your own browser, where you're signed in: "Playing “Transformers, the tech behind LLMs” from 3Blue1Brown on YouTube." About 2 seconds, no model call.
+- **Claude and Claude Code.** "Ask Claude Code to fix the failing tests in the alfred project", "open Claude Code in my alfred repo", "ask Claude to summarize today's AI news". Alfred opens a new Claude Code session (or a new chat) in the Claude app with your prompt filled in, through Claude's own links; you read it and press Return. A project you name is looked for in your home folder, two levels down, and in `[claude] folders`; the Claude app asks you to confirm it. Set `[claude] opens_in = "terminal"` to get Claude Code in a terminal instead.
+
+The first time Alfred uses Music, Messages, Contacts or Mail, macOS asks whether Alfred may control it.
+
 **Mail.** "Read my last email", "who emailed me last", "anything new in my inbox?" and "lis mon dernier mail" read the newest email in your inbox: who sent it, when, the subject and how it begins. Name a sender ("the last email from Ada") to read theirs. "Reply to my last email saying …" (or "réponds au dernier mail de Marie en disant …") opens a reply in Mail with your words in it and the email quoted below, brought forward for you to check and send. Without words, Alfred asks what to say. Alfred has no way to send mail: the script it runs contains no send command, and a test keeps it that way. What an email says is spoken to you but never kept in the conversation the model sees, so an email can't give Alfred orders.
 
 **Shortcuts.** Every shortcut in your Shortcuts app is available. Name one ("run Good Morning", "run the Lights Off shortcut") and it runs at once. Say it more loosely ("I'm cold in the living room") and the model picks the shortcut, then asks before running it, because shortcuts drive real devices. Names you trust can skip the question: list them in `[shortcuts] trusted`. `alfred shortcuts` shows them all.
@@ -191,7 +202,7 @@ brew install agent-desktop
 
 Alfred then asks for Accessibility and opens System Settings at Privacy & Security → Accessibility: turn on Alfred (or your terminal, for the command line). When you ask to be told something ("read my latest WhatsApp message", "how many conversations are there?"), Alfred first reads the window as it is and answers in one look, a few seconds, when it already shows the answer. Otherwise it looks at the window, picks one step, acts, and looks again, at most 8 steps. It names the places most apps share (a chat's message box, its search field, its send button) for the model, so it goes straight to them.
 
-**Messages.** "Send Ada a WhatsApp saying see you at 7", "reply to my latest WhatsApp message saying on my way", "text Marie in Messages: I'm running late" or "ask Claude what the capital of Italy is" follow the recipe every chat app shares, with no model step at all: open the conversation (its row, through search when it isn't listed, the newest one for a reply), type into the message box, and ask you before clicking Send. It takes a few seconds; when a step can't be found, Alfred falls back to working step by step. A conversation is opened only for a name you said. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:8b` by default):
+**Chat apps.** "Send Ada a WhatsApp saying see you at 7" or "reply to my latest WhatsApp message saying on my way" follow the recipe every chat app shares, with no model step at all: open the conversation (its row, through search when it isn't listed, the newest one for a reply), type into the message box, and ask you before clicking Send. It takes a few seconds; when a step can't be found, Alfred falls back to working step by step. A conversation is opened only for a name you said. It works only inside the app you named, it never moves your pointer, and it stops before anything irreversible: a Send, Delete, Pay or Publish click comes back to you as a Yes/No question. Text inside the app, like an email, is treated as content, never as instructions. Reading an app's interface needs a bigger model than the default, set in `[desktop] model` (`qwen3:8b` by default):
 
 ```bash
 ollama pull qwen3:8b
@@ -264,6 +275,10 @@ max_steps = 8
 [recording]
 enabled = false              # true: keep what Alfred saw, decided and did, on this Mac only (see below)
 max_mb = 500                 # recording stops when the folder reaches this size
+
+[claude]
+opens_in = "desktop"         # "ask Claude Code to…" opens the Claude app's Code tab; "terminal" for a terminal
+folders = []                 # where your projects are, looked in first when you name one ("~/Code")
 
 [browser]
 enabled = true               # website tasks and spoken search answers, when agent-browser is installed

@@ -140,8 +140,8 @@ expect = { title = "plants" }
 
 [[case]]
 text = "I'd like to listen to some music"
-tool = "open_app"
-expect = { name = "music" }
+tool = "music"
+expect = { command = "play" }
 
 [[case]]
 text = "find me some reviews of the new MacBook Air"

@@ -36,7 +36,7 @@ use alfred_core::{Action, Outcome};
 use serde_json::Value;
 
 use crate::browser::{Browser, BrowserError, args};
-use crate::results::organic_results;
+use crate::results::{organic_results, youtube_videos};
 use crate::{
     Circling, Step, acted, clip, done_so_far, guard, plan_block, plan_schema, plan_steps, step_schema, summary, trace, trace_plan,
 };
@@ -1067,6 +1067,19 @@ impl WebHands for BrowserHands {
             return Ok(Outcome::new(format!("{lead}{said}")));
         }
         Err("no search engine could be read".into())
+    }
+
+    fn find_video(&self, query: &str) -> Result<alfred_core::FoundVideo, String> {
+        let results = alfred_core::normalize::youtube_search_url(query);
+        self.start(Some(&results)).map_err(|e| format!("I couldn't open YouTube: {e}"))?;
+        // The results render after the page loads.
+        self.call(args(["wait", "--load", "load", "--timeout", "10000"])).ok();
+        let (snap, _) = self.snapshot_past_consent(true)?;
+        let url = self.url_now().unwrap_or_default();
+        if is_robot_check(&snap, &url, "") {
+            return Err("YouTube asked for a robot check.".into());
+        }
+        youtube_videos(&snap).into_iter().next().ok_or_else(|| format!("I couldn't find a video about “{query}” on YouTube."))
     }
 
     fn show(&self, url: &str) -> Result<Outcome, String> {
