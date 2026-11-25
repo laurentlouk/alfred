@@ -69,3 +69,26 @@ fn live_wikipedia_search_and_a_spoken_weather_answer() {
     backend(&session, &profile).call(&args(["close"])).ok();
     assert!(outcome.is_ok(), "{outcome:?}");
 }
+
+/// YouTube's first video for each of `ALFRED_LIVE_VIDEOS` (separated by `|`), read with no model call.
+/// Nothing plays: only the results page is opened.
+#[test]
+#[ignore = "drives a real browser on the web"]
+fn live_youtube_videos() {
+    if std::env::var_os("ALFRED_LIVE_BROWSER").is_none() || program().is_none() {
+        return;
+    }
+    let profile = PathBuf::from(std::env::var("ALFRED_LIVE_PROFILE").unwrap_or_else(|_| "/tmp/alfred-live-browser".into()));
+    let session = format!("alfred-live-yt-{}", std::process::id());
+    let h = hands(&session, &profile, "google");
+    let queries = std::env::var("ALFRED_LIVE_VIDEOS").unwrap_or_else(|_| "how transformers work|sourdough bread for beginners".into());
+    let mut found = 0;
+    for q in queries.split('|').map(str::trim).filter(|q| !q.is_empty()) {
+        let started = Instant::now();
+        let v = h.find_video(q);
+        println!("VIDEO: {q}\n  -> {v:?}\n  ({:.1} s)", started.elapsed().as_secs_f32());
+        found += usize::from(v.is_ok_and(|v| v.url.starts_with("https://www.youtube.com/watch?v=") && !v.title.is_empty()));
+    }
+    backend(&session, &profile).call(&args(["close"])).ok();
+    assert!(found > 0, "no video found");
+}

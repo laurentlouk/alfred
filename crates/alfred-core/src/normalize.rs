@@ -174,6 +174,11 @@ pub fn search_url(engine: &str, query: &str) -> String {
     }
 }
 
+/// YouTube's results for `query`.
+pub fn youtube_search_url(query: &str) -> String {
+    format!("https://www.youtube.com/results?search_query={}", form_encode(query.trim()))
+}
+
 /// `application/x-www-form-urlencoded`: unreserved bytes stay, spaces become '+', the rest is %XX.
 pub fn form_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);

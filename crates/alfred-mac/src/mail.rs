@@ -99,6 +99,123 @@ on two(n)
     return n as string
 end two"#;
 
+/// `argv`: words of the subject ("" for any), part of the sender ("" for anyone). Searches each account's
+/// inbox. Answers the time now, then, for each inbox, how many emails match and its five newest (sender,
+/// subject, received), each record after RS.
+const SEARCH_SCRIPT: &str = r#"on run argv
+    set q to item 1 of argv
+    set fromText to item 2 of argv
+    set sep to character id 31
+    set rs to character id 30
+    set out to my stamp(current date)
+    tell application "Mail"
+        set boxes to mailboxes of inbox
+        if (count of boxes) is 0 then set boxes to {inbox}
+        repeat with mb in boxes
+            try
+                if q is not "" and fromText is not "" then
+                    set found to (messages of mb whose subject contains q and sender contains fromText)
+                else if q is not "" then
+                    set found to (messages of mb whose subject contains q)
+                else
+                    set found to (messages of mb whose sender contains fromText)
+                end if
+                set out to out & rs & "count" & sep & (count of found)
+                set n to 0
+                repeat with m in found
+                    set n to n + 1
+                    if n > 5 then exit repeat
+                    set subj to ""
+                    try
+                        set subj to subject of m
+                    end try
+                    set out to out & rs & (sender of m) & sep & subj & sep & my stamp(date received of m)
+                end repeat
+            end try
+        end repeat
+    end tell
+    return out
+end run
+
+on stamp(d)
+    return (year of d as string) & "-" & my two((month of d) as integer) & "-" & my two(day of d) & " " & my two(hours of d) & ":" & my two(minutes of d)
+end stamp
+
+on two(n)
+    if n < 10 then return "0" & n
+    return n as string
+end two"#;
+
+/// The emails a search found: how many in all, and the newest first (at most five).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub total: usize,
+    pub now: String,
+    pub newest: Vec<Email>,
+}
+
+/// Find emails whose subject has `query` and whose sender has `from`, in every account's inbox.
+pub fn search(query: Option<&str>, from: Option<&str>, timeout: Duration) -> Result<Outcome, String> {
+    let q = query.map(singular).unwrap_or_default();
+    let out = osascript(SEARCH_SCRIPT, &[&q, from.map(str::trim).unwrap_or("")], timeout)?;
+    Ok(Outcome::new(search_summary(&parse_found(&out), query, from)))
+}
+
+/// Without a plural's "s", so "invoices" also finds "Invoice": `contains` does the rest.
+pub fn singular(q: &str) -> String {
+    let q = q.trim();
+    match q.strip_suffix('s') {
+        Some(stem) if q.chars().count() > 5 && !q.ends_with("ss") => stem.to_string(),
+        _ => q.to_string(),
+    }
+}
+
+pub fn parse_found(out: &str) -> Found {
+    let mut records = out.trim_end_matches(['\n', '\r']).split('\u{1e}');
+    let now = records.next().unwrap_or("").trim().to_string();
+    let (mut total, mut newest) = (0, Vec::new());
+    for r in records {
+        let f: Vec<&str> = r.split(SEP).collect();
+        match f.as_slice() {
+            ["count", n] => total += n.trim().parse::<usize>().unwrap_or(0),
+            [sender, subject, received] => newest.push(Email {
+                sender: sender.trim().to_string(),
+                subject: subject.trim().to_string(),
+                received: received.trim().to_string(),
+                now: now.clone(),
+                text: String::new(),
+            }),
+            _ => {}
+        }
+    }
+    newest.sort_by(|a: &Email, b: &Email| b.received.cmp(&a.received));
+    newest.truncate(5);
+    Found { total: total.max(newest.len()), now, newest }
+}
+
+/// "I found 4 emails about “invoice”. The newest: from Ada Lovelace today at 08:05, “Invoice November”; …"
+pub fn search_summary(found: &Found, query: Option<&str>, from: Option<&str>) -> String {
+    let about = query.map(|q| format!(" about “{}”", q.trim())).unwrap_or_default();
+    let by = from.map(|f| format!(" from {}", f.trim())).unwrap_or_default();
+    let one = |e: &Email| {
+        let subject = Some(e.subject.trim()).filter(|s| !s.is_empty()).map(|s| format!(", “{s}”")).unwrap_or_default();
+        format!("from {} {}{subject}", sender_name(&e.sender), when(&e.received, &e.now))
+    };
+    match found.newest.as_slice() {
+        [] => format!("I found no email{about}{by} in your inbox."),
+        [e] => format!("I found one email{about}{by}: {}.", one(e)),
+        list => {
+            let said: Vec<String> = list.iter().take(3).map(one).collect();
+            let joined = match said.as_slice() {
+                [a, b] => format!("{a}; and {b}"),
+                [a, b, c] => format!("{a}; {b}; and {c}"),
+                other => other.join("; "),
+            };
+            format!("I found {} emails{about}{by}. The newest: {joined}.", found.total)
+        }
+    }
+}
+
 /// An email as the script describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Email {
@@ -299,6 +416,50 @@ mod tests {
         assert_eq!((e.sender.as_str(), e.subject.as_str(), e.received.as_str()), ("Ada <ada@example.com>", "Hi", "2026-11-24 08:05"));
         assert_eq!(e.text, format!("Line one\nwith {SEP} inside"), "the text keeps whatever it holds");
         assert_eq!(parse("\n"), None, "no such email");
+    }
+
+    #[test]
+    fn the_search_script_takes_text_only_through_argv_and_cannot_send() {
+        assert!(SEARCH_SCRIPT.starts_with("on run argv") && !SEARCH_SCRIPT.contains("{}") && SEARCH_SCRIPT.is_ascii());
+        let words: Vec<&str> = SEARCH_SCRIPT.split(|c: char| !c.is_alphanumeric()).collect();
+        assert!(!words.contains(&"send") && !words.contains(&"reply") && !words.contains(&"delete"));
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let out = std::env::temp_dir().join(format!("alfred-mail-search-{}.scpt", std::process::id()));
+        let mut cmd = std::process::Command::new("osacompile");
+        cmd.arg("-e").arg(SEARCH_SCRIPT).arg("-o").arg(&out);
+        let result = crate::run(cmd, Duration::from_secs(30));
+        std::fs::remove_file(&out).ok();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn search_answers_are_merged_newest_first_across_inboxes() {
+        let rs = '\u{1e}';
+        let out = format!(
+            "2026-11-24 09:41{rs}count{SEP}2{rs}Free <f@free.fr>{SEP}Votre facture{SEP}2026-11-23 21:10{rs}Bob <b@x.com>{SEP}Re: invoice{SEP}2026-11-20 10:00{rs}count{SEP}5{rs}Ada Lovelace <ada@example.com>{SEP}Invoice November{SEP}2026-11-24 08:05\n"
+        );
+        let found = parse_found(&out);
+        assert_eq!(found.total, 7);
+        assert_eq!(
+            found.newest.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(),
+            ["Invoice November", "Votre facture", "Re: invoice"]
+        );
+        assert_eq!(
+            search_summary(&found, Some("invoice"), None),
+            "I found 7 emails about “invoice”. The newest: from Ada Lovelace today at 08:05, “Invoice November”; from Free yesterday at 21:10, “Votre facture”; and from Bob on 20 November, “Re: invoice”."
+        );
+        let none = parse_found("2026-11-24 09:41\n");
+        assert_eq!(search_summary(&none, Some("plumber"), Some("Ada")), "I found no email about “plumber” from Ada in your inbox.");
+        let one = Found { total: 1, now: found.now.clone(), newest: vec![found.newest[0].clone()] };
+        assert_eq!(
+            search_summary(&one, None, Some("Ada")),
+            "I found one email from Ada: from Ada Lovelace today at 08:05, “Invoice November”."
+        );
+        assert_eq!(singular("invoices"), "invoice");
+        assert_eq!(singular("taxes"), "taxes", "too short to guess");
+        assert_eq!(singular("address"), "address");
     }
 
     #[test]

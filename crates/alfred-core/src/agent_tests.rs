@@ -228,6 +228,7 @@ fn with_shortcuts(replies: Vec<Result<crate::llm::ModelReply, LlmError>>) -> Age
         shortcuts: vec!["démarre la musique".into(), "Bonjour".into()],
         hands: true,
         browser: false,
+        claude: false,
     })
 }
 

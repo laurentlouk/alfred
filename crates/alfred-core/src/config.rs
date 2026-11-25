@@ -16,6 +16,24 @@ pub struct Config {
     pub desktop: DesktopConfig,
     pub browser: BrowserConfig,
     pub recording: RecordingConfig,
+    pub claude: ClaudeConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClaudeConfig {
+    /// Where "ask Claude Code to…" opens a session: `desktop` (the Claude app's Code tab) or `terminal`
+    /// (Claude Code in a terminal window). Either way the prompt waits for the user to send it.
+    pub opens_in: String,
+    /// Folders that hold your projects, looked in (two levels down) before the home folder when you name
+    /// one: "in the alfred project". A leading `~/` is the home folder.
+    pub folders: Vec<String>,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self { opens_in: "desktop".into(), folders: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -380,6 +398,13 @@ mod tests {
         let on: Config = toml::from_str("[recording]\nenabled = true\n").unwrap();
         assert!(on.recording.enabled && on.recording.max_mb == 500);
         assert!(recordings_dir().ends_with("recordings"));
+    }
+
+    #[test]
+    fn claude_code_opens_in_the_app_unless_the_user_chose_a_terminal() {
+        assert_eq!(Config::default().claude.opens_in, "desktop");
+        let c: Config = toml::from_str("[claude]\nopens_in = \"terminal\"\nfolders = [\"~/Code\"]\n").unwrap();
+        assert_eq!((c.claude.opens_in.as_str(), c.claude.folders.as_slice()), ("terminal", ["~/Code".to_string()].as_slice()));
     }
 
     #[test]

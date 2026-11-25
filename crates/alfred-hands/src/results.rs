@@ -149,10 +149,157 @@ fn base64url(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The videos on YouTube's results page, in order: each `watch?v=` link (never a Short, a channel or an
+/// ad) with its title (without the length YouTube reads out after it) and the channel linked after it.
+pub fn youtube_videos(snapshot: &Value) -> Vec<alfred_core::FoundVideo> {
+    let lines: Vec<_> = snapshot["snapshot"].as_str().unwrap_or("").lines().filter_map(parse_line).collect();
+    let is_video = |l: &crate::web::Line| l.role == "link" && video_id(&l.url).is_some();
+    let mut out: Vec<alfred_core::FoundVideo> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let Some(id) = (is_video(l)).then(|| video_id(&l.url)).flatten() else { continue };
+        // The result is the container its heading sits in, up to the next one.
+        let start = lines[..i].iter().rposition(|p| p.depth + 1 < l.depth.max(1)).unwrap_or(i);
+        let next = |n: &crate::web::Line| if start < i { n.depth <= lines[start].depth } else { is_video(n) || n.url.contains("/shorts/") };
+        let block_end = lines[i + 1..].iter().position(next).map_or(lines.len(), |p| i + 1 + p);
+        if lines[start..block_end].iter().any(|b| is_ad_label(&b.name)) {
+            continue;
+        }
+        let url = format!("https://www.youtube.com/watch?v={id}");
+        if out.iter().any(|v| v.url == url) {
+            continue;
+        }
+        let channel = lines[i + 1..block_end]
+            .iter()
+            .find(|n| n.role == "link" && (n.url.contains("youtube.com/@") || n.url.contains("youtube.com/channel/")))
+            .map(|n| channel_name(&n.name))
+            .unwrap_or_default();
+        let title = without_length(l.name.trim());
+        if title.is_empty() {
+            continue;
+        }
+        out.push(alfred_core::FoundVideo { title, channel, url });
+    }
+    out
+}
+
+/// "Sponsored", "Sponsorisé · Acme": how YouTube marks an ad among the results.
+fn is_ad_label(name: &str) -> bool {
+    let n = name.trim().to_lowercase();
+    ["sponsored", "sponsorisé", "sponsorisée", "annonce", "ad", "promoted"]
+        .iter()
+        .any(|m| n == *m || n.strip_prefix(m).is_some_and(|rest| rest.starts_with([' ', '·', '•', ':'])))
+}
+
+/// A channel's name without the words its avatar link adds: "Accéder à la chaîne 3Blue1Brown" →
+/// "3Blue1Brown".
+fn channel_name(link: &str) -> String {
+    const PREFIXES: &[&str] =
+        &["Go to channel ", "Accéder à la chaîne ", "Zum Kanal ", "Ir al canal ", "Vai al canale ", "Ir para o canal "];
+    let name = link.trim();
+    PREFIXES.iter().find_map(|p| name.strip_prefix(p)).unwrap_or(name).trim().to_string()
+}
+
+/// A watch link's video id: `https://www.youtube.com/watch?v=wjZofJX0v4M&pp=…` → `wjZofJX0v4M`.
+fn video_id(href: &str) -> Option<String> {
+    let lower = href.to_lowercase();
+    if !(lower.starts_with("https://www.youtube.com/watch?") || lower.starts_with("https://youtube.com/watch?")) || is_ad(href) {
+        return None;
+    }
+    let query = href.split_once('?')?.1;
+    let id = query.split('&').find_map(|kv| kv.strip_prefix("v="))?;
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).then(|| id.to_string())
+}
+
+/// A title without the length YouTube appends to a link's name: "Transformers explained 6 minutes et 30
+/// secondes" → "Transformers explained".
+fn without_length(title: &str) -> String {
+    const UNITS: &[&str] = &[
+        "second", "seconds", "seconde", "secondes", "minute", "minutes", "hour", "hours", "heure", "heures", "sekunden", "minuten",
+        "stunde", "stunden", "segundos", "minutos", "horas",
+    ];
+    const JOINS: &[&str] = &["et", "and", "und", "y", ","];
+    let mut words: Vec<&str> = title.split_whitespace().collect();
+    loop {
+        let last = |w: &[&str], back: usize| w.len().checked_sub(back + 1).map(|i| w[i].trim_end_matches(',').to_lowercase());
+        match (last(&words, 0), last(&words, 1)) {
+            (Some(unit), Some(n)) if UNITS.contains(&unit.as_str()) && n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty() => {
+                words.truncate(words.len() - 2);
+                while words.last().is_some_and(|w| JOINS.contains(&w.to_lowercase().as_str())) {
+                    words.pop();
+                }
+                if let Some(w) = words.last_mut() {
+                    *w = w.trim_end_matches(',');
+                }
+            }
+            _ => break,
+        }
+    }
+    words.join(" ").trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// YouTube's results as `snapshot -i -c -u` gave them on 2026-11-25 (in French), cut down.
+    const YOUTUBE: &str = r#"- link "Shorts" [ref=e9, url=https://www.youtube.com/shorts/]
+- generic "6:30Comment fonctionne un transformateur" [ref=e22] clickable [cursor:pointer]
+  - heading "Comment fonctionne un transformateur – Principe de fonctionnement en génie électrique 6 minutes et 30 secondes" [level=3, ref=e64]
+    - link "Comment fonctionne un transformateur – Principe de fonctionnement en génie électrique 6 minutes et 30 secondes" [ref=e115, url=https://www.youtube.com/watch?v=UchitHGF4n8&pp=ygUYaG93IGRv]
+  - link "Accéder à la chaîne The Engineering Mindset" [ref=e226, url=https://www.youtube.com/@EngineeringMindset]
+  - link "The Engineering Mindset" [ref=e176, url=https://www.youtube.com/@EngineeringMindset]
+  - button "Autres actions" [ref=e116]
+- generic "Sponsorisé" [ref=e30]
+  - heading "Learn AI in 30 days" [level=3, ref=e31]
+    - link "Learn AI in 30 days" [ref=e32, url=https://www.youtube.com/watch?v=AdAdAdAdAd1&pp=x]
+  - text "Sponsorisé"
+- generic "27:14Transformers, the tech behind LLMs" [ref=e23] clickable [cursor:pointer]
+  - heading "Transformers, the tech behind LLMs | Deep Learning Chapter 5 27 minutes" [level=3, ref=e66]
+    - link "Transformers, the tech behind LLMs | Deep Learning Chapter 5 27 minutes" [ref=e117, url=https://www.youtube.com/watch?v=wjZofJX0v4M&pp=ygUYaG93]
+  - link "3Blue1Brown" [ref=e177, url=https://www.youtube.com/@3blue1brown]
+- generic "How a Transformer Works" [ref=e75] clickable [cursor:pointer, onclick]
+  - heading "How a Transformer Works | Faraday's Law Explained" [level=3, ref=e127]
+    - link "How a Transformer Works | Faraday's Law Explained" [ref=e182, url=https://www.youtube.com/shorts/KZ1s-keMRyQ]
+- generic "What are Transformers" [ref=e24]
+  - heading "What are Transformers (Machine Learning Model)? 5 minutes, 51 seconds" [level=3, ref=e68]
+    - link "What are Transformers (Machine Learning Model)? 5 minutes, 51 seconds" [ref=e119, url=https://www.youtube.com/watch?v=ZXiruGOCn9s&list=RDZXiruGOCn9s]"#;
+
+    #[test]
+    fn youtube_videos_are_read_in_order_without_shorts_or_ads() {
+        let videos = youtube_videos(&json!({ "snapshot": YOUTUBE }));
+        let got: Vec<(&str, &str, &str)> = videos.iter().map(|v| (v.title.as_str(), v.channel.as_str(), v.url.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "Comment fonctionne un transformateur – Principe de fonctionnement en génie électrique",
+                    "The Engineering Mindset",
+                    "https://www.youtube.com/watch?v=UchitHGF4n8"
+                ),
+                (
+                    "Transformers, the tech behind LLMs | Deep Learning Chapter 5",
+                    "3Blue1Brown",
+                    "https://www.youtube.com/watch?v=wjZofJX0v4M"
+                ),
+                ("What are Transformers (Machine Learning Model)?", "", "https://www.youtube.com/watch?v=ZXiruGOCn9s"),
+            ]
+        );
+        assert_eq!(
+            videos[1].summary(),
+            "Playing “Transformers, the tech behind LLMs | Deep Learning Chapter 5” from 3Blue1Brown on YouTube."
+        );
+    }
+
+    #[test]
+    fn lengths_are_taken_off_titles_and_nothing_else() {
+        assert_eq!(without_length("Intro 1 heure, 2 minutes et 3 secondes"), "Intro");
+        assert_eq!(without_length("Top 10 minutes of football"), "Top 10 minutes of football");
+        assert_eq!(without_length("Chapter 5 27 minutes"), "Chapter 5");
+        assert_eq!(video_id("https://www.youtube.com/watch?v=abc_DEF-12&t=3"), Some("abc_DEF-12".into()));
+        assert_eq!(video_id("https://www.youtube.com/shorts/abc"), None);
+        assert_eq!(video_id("https://www.googleadservices.com/pagead/aclk?watch?v=x"), None);
+    }
 
     #[test]
     fn redirects_are_unwrapped_and_ads_and_engine_pages_dropped() {

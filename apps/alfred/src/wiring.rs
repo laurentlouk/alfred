@@ -31,6 +31,7 @@ pub fn build_for(cfg: &Config, real: bool) -> (Agent, MacExecutor) {
     if cfg.shortcuts.enabled && find_program("shortcuts").is_some() {
         catalog.shortcuts = shortcuts::list(Duration::from_secs(15)).unwrap_or_default();
     }
+    catalog.claude = claude_available(cfg);
     let mut exec = MacExecutor::from_config(cfg);
     // An app's window or a web page fills a few thousand tokens: give the model that drives the steps room
     // for them. The browser uses the same model, since its decisions need structured output too.
@@ -73,4 +74,13 @@ pub fn build_for(cfg: &Config, real: bool) -> (Agent, MacExecutor) {
         agent = agent.with_recorder(r);
     }
     (agent, exec)
+}
+
+/// Claude Code can be opened: the Claude app is installed (for `[claude] opens_in = "desktop"`), or the
+/// `claude` program is (either way).
+pub fn claude_available(cfg: &Config) -> bool {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let app = [std::path::PathBuf::from("/Applications/Claude.app"), home.join("Applications/Claude.app")].iter().any(|p| p.exists());
+    let desktop = !cfg.claude.opens_in.trim().eq_ignore_ascii_case("terminal");
+    (desktop && app) || find_program("claude").is_some()
 }

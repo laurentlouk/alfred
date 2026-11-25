@@ -10,6 +10,8 @@ pub struct Catalog {
     pub hands: bool,
     /// `agent-browser` is available, so `use_browser` can be offered.
     pub browser: bool,
+    /// The Claude app or Claude Code is installed, so `claude_code` can be offered.
+    pub claude: bool,
 }
 
 impl Catalog {

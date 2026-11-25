@@ -8,7 +8,8 @@ A local, voice-first assistant for the Mac in Rust, with a Rune UI. Start with `
 
 - `cargo test --workspace`: the whole suite. The Kokoro → Moonshine round trip runs only when `alfred setup` has downloaded the voice models.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`: CI runs both.
-- `cargo run -p alfred -- eval [--model] [eval/apps.toml | eval/thinking.toml | eval/page.toml]`: score the router (and the configured model) on `eval/utterances.toml`, the shortcuts and on-screen fixture, the hard questions, or requests about the page open in Chrome (a case can say where the user is: `app`, `site`, `alfred_site`).
+- `cargo run -p alfred -- eval [--model] [eval/apps.toml | eval/thinking.toml | eval/page.toml | eval/cards.toml]`: score the router (and the configured model) on `eval/utterances.toml`, the shortcuts and on-screen fixture, the hard questions, requests about the page open in Chrome (a case can say where the user is: `app`, `site`, `alfred_site`), or the app cards (Music, texts, Mail search, YouTube, Claude Code).
+- `ALFRED_LIVE_BROWSER=1 cargo test -p alfred-hands --test live_browser live_youtube_videos -- --ignored --nocapture`: YouTube's first videos for real queries, headless, nothing played.
 - `cargo run -p alfred -- shortcuts`: list the user's Shortcuts.
 - `cargo run -p alfred -- --snap out.png --scene conversation --scale 2`: render the panel headlessly (scenes: idle, listening, thinking, speaking, conversation, confirm).
 - `cargo run -p alfred -- ask --dry-run "…"`: run the brain without touching the Mac (it still reads which app the user is in).
@@ -20,6 +21,8 @@ A local, voice-first assistant for the Mac in Rust, with a Rune UI. Start with `
 
 - `alfred ask` without `--dry-run` acts on the real Mac (opens apps, writes notes and reminders, reads Mail and opens reply drafts, runs Shortcuts that drive real devices, operates apps on screen): only when asked to.
 - Mail is drafted, never sent: `crates/alfred-mac/src/mail.rs` has no send command, and a test fails if one appears.
+- A text goes through Messages only as `Action::SendText`, which only a found contact's confirmation produces (`messages::find`); the model and the router can't produce it, and it is `Risk::Confirm`.
+- Claude's links (`crates/alfred-mac/src/claude.rs`) only fill a prompt in; Alfred never presses Return in Claude.
 - Text written by someone else (an email, an app's window) is spoken but kept out of the model's history: `Action::reads_outside_text` marks the actions that return it.
 - What the user is looking at reaches the model as an app's name and a site's host only (`alfred_core::context`), never a window title or page text.
 - Recordings (`alfred_core::record`) are off by default, stay on the Mac in files only the user can read, and are never sent anywhere; a dry run records nothing. The app shows `● rec` while recording.

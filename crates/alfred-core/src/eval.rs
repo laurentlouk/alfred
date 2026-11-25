@@ -52,6 +52,8 @@ struct CatalogSpec {
     hands: bool,
     #[serde(default)]
     browser: bool,
+    #[serde(default)]
+    claude: bool,
 }
 
 pub fn load(path: &Path) -> Result<Vec<Case>, String> {
@@ -67,7 +69,8 @@ pub fn parse(text: &str) -> Result<Vec<Case>, String> {
 /// Cases and the catalog they assume (empty when the fixture has no `[catalog]`).
 pub fn parse_with_catalog(text: &str) -> Result<(Vec<Case>, Catalog), String> {
     let f = toml::from_str::<Fixture>(text).map_err(|e| e.to_string())?;
-    let catalog = f.catalog.map(|c| Catalog { shortcuts: c.shortcuts, hands: c.hands, browser: c.browser }).unwrap_or_default();
+    let catalog =
+        f.catalog.map(|c| Catalog { shortcuts: c.shortcuts, hands: c.hands, browser: c.browser, claude: c.claude }).unwrap_or_default();
     Ok((f.cases, catalog))
 }
 
